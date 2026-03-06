@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 18
+VisualStudioVersion = 18.3.11520.95 d18.3
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CsToCppTranspiler", "CsToCppTranspiler.csproj", "{03D37674-9E0D-1BB6-6406-1835C549421B}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{03D37674-9E0D-1BB6-6406-1835C549421B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{03D37674-9E0D-1BB6-6406-1835C549421B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{03D37674-9E0D-1BB6-6406-1835C549421B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{03D37674-9E0D-1BB6-6406-1835C549421B}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {0BF871FA-F13C-4879-814D-1A4BADB8E0EF}
+	EndGlobalSection
+EndGlobal
