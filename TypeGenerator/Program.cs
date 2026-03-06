@@ -19,8 +19,15 @@ class Program
             return;
         }
 
-        var includeFolder = args[0];
-        var outputFolder = args[1];
+        var includeFolder = args[^2];
+        var outputFolder = args[^1];
+        if (!Directory.Exists(includeFolder))
+        {
+            Console.WriteLine($"Error: include folder does not exist or is not a directory: {includeFolder}");
+            Console.WriteLine("Usage: TypeGenerator <include-folder> <output-folder>");
+            Console.WriteLine("Example: TypeGenerator C:\\path\\to\\bs-cordl\\include C:\\output\\Types");
+            return;
+        }
 
         var generator = new TypeStubGenerator();
         generator.Generate(includeFolder, outputFolder);
@@ -31,8 +38,14 @@ class TypeStubGenerator
 {
     private readonly Dictionary<(string ns, string typeName), TypeData> _types = new();
     private readonly Dictionary<string, TypeData> _fullNames = new();
+    private readonly Dictionary<string, HashSet<string>> _typeNameToNamespaces = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _realCsTypePaths = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _realNestedEdgeKeys = new(StringComparer.Ordinal);
     private readonly HashSet<(string ns, string parentType, string nestedType, int arity)> _nestedTypes = new();
     private readonly HashSet<string> _generatedMembers = new();
+    private readonly HashSet<string> _namespaceRoots = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _allNamespaces = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, HashSet<string>> _namespaceLeafToFull = new(StringComparer.Ordinal);
 
     private static readonly HashSet<string> SystemTypes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -48,6 +61,19 @@ class TypeStubGenerator
         "Random", "MathF", "GC", "BitConverter", "Buffer", "BigInteger", "Complex"
     };
 
+    private static readonly HashSet<string> GlobalNamespaceRoots = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "System", "GlobalNamespace", "UnityEngine", "Unity", "Zenject", "TMPro",
+        "Newtonsoft", "Mono", "MS", "Org", "JetBrains"
+    };
+
+    private static readonly Regex TypeDeclRegex = new(
+        @"// CS Name: ([^\r\n]+)\s+(?:template\s*<[^>]*>\s*)?(?://[^\r\n]*\r?\n\s*)*(struct|class|enum)\s+CORDL_TYPE\s+(\w+)",
+        RegexOptions.Compiled);
+    private static readonly Regex PragmaRegex = new(
+        @"^\s*#pragma[^\r\n]*\r?\n",
+        RegexOptions.Compiled | RegexOptions.Multiline);
+
     public void Generate(string includeFolder, string outputFolder)
     {
         Console.WriteLine($"Scanning {includeFolder}...");
@@ -55,7 +81,7 @@ class TypeStubGenerator
         foreach (var dir in Directory.GetDirectories(includeFolder))
         {
             var ns = Path.GetFileName(dir);
-            if (ns.StartsWith("zzzz__") || ns == "Internal" || ns.Contains("cordl_internals")) continue;
+            if (ns.StartsWith("zzzz__") || ns == "Internal" || ns == "System" || ns.Contains("cordl_internals")) continue;
             ProcessNamespace(dir, ns);
         }
 
@@ -63,6 +89,34 @@ class TypeStubGenerator
         {
             var full = string.IsNullOrEmpty(kv.Key.ns) ? "global::" + kv.Key.typeName : "global::" + kv.Key.ns + "." + kv.Key.typeName;
             _fullNames[full] = kv.Value;
+            _allNamespaces.Add(kv.Key.ns);
+            var hierarchy = SplitNestingValidated(kv.Key.typeName, kv.Key.ns);
+            var csPath = BuildCsPath(kv.Key.ns, hierarchy);
+            _realCsTypePaths.Add(csPath);
+            if (hierarchy.Count >= 2)
+            {
+                var parentCsPath = BuildCsPath(kv.Key.ns, hierarchy.Take(hierarchy.Count - 1).ToList());
+                var childName = Sanitize(hierarchy[^1].name);
+                _realNestedEdgeKeys.Add(MakeNestedEdgeKey(kv.Key.ns, parentCsPath, childName));
+            }
+        }
+        foreach (var ns in _allNamespaces)
+        {
+            if (string.IsNullOrEmpty(ns)) continue;
+            var lastDot = ns.LastIndexOf('.');
+            var leaf = lastDot >= 0 ? ns.Substring(lastDot + 1) : ns;
+            if (!_namespaceLeafToFull.TryGetValue(leaf, out var set))
+            {
+                set = new HashSet<string>(StringComparer.Ordinal);
+                _namespaceLeafToFull[leaf] = set;
+            }
+            set.Add(ns);
+        }
+        foreach (var ns in _types.Keys.Select(k => k.ns).Where(ns => !string.IsNullOrEmpty(ns)).Distinct())
+        {
+            var firstDot = ns.IndexOf('.');
+            var root = firstDot < 0 ? ns : ns.Substring(0, firstDot);
+            _namespaceRoots.Add(root);
         }
 
         foreach (var data in _types.Values)
@@ -129,7 +183,7 @@ class TypeStubGenerator
         foreach (var subdir in Directory.GetDirectories(dir))
         {
             var subNs = Path.GetFileName(subdir);
-            if (subNs.StartsWith("zzzz__") || subNs == "Internal" || subNs.Contains("cordl_internals")) continue;
+            if (subNs.StartsWith("zzzz__") || subNs == "Internal" || subNs == "System" || subNs.Contains("cordl_internals")) continue;
             ProcessNamespace(subdir, $"{ns}.{subNs}");
         }
     }
@@ -137,26 +191,31 @@ class TypeStubGenerator
     private void ProcessTypeFile(string filePath, string ns)
     {
         var content = File.ReadAllText(filePath);
-        var matches = Regex.Matches(content, @"// CS Name: ([^\r\n]+)\s+(?:template\s*<[^>]*>\s*)?(?://[^\r\n]*\r?\n\s*)*(struct|class|enum)\s+CORDL_TYPE\s+(\w+)");
-        
-        foreach (Match m in matches)
+        var scanContent = PragmaRegex.Replace(content, "");
+        var matches = TypeDeclRegex.Matches(scanContent);
+
+        for (int i = 0; i < matches.Count; i++)
         {
+            var m = matches[i];
             var csName = m.Groups[1].Value.Trim();
             var keyword = m.Groups[2].Value;
             var cppName = m.Groups[3].Value;
             
             int start = m.Index;
-            var next = matches.Cast<Match>().FirstOrDefault(nm => nm.Index > start);
-            int end = next?.Index ?? content.Length;
-            var typeContent = content.Substring(start, end - start);
+            var next = i + 1 < matches.Count ? matches[i + 1] : null;
+            int end = next?.Index ?? scanContent.Length;
+            var typeContent = scanContent.Substring(start, end - start);
             
             var key = (ns, cppName);
             if (_types.ContainsKey(key)) continue;
+            if (cppName.Contains("_d__") || cppName.Contains("DisplayClass")) continue;
 
             var data = new TypeData { Namespace = ns, TypeName = cppName };
             _types[key] = data;
+            IndexTypeName(cppName, ns);
             
             data.IsValueType = keyword == "struct" || keyword == "enum" || typeContent.Contains("__IL2CPP_IS_VALUE_TYPE = true");
+            data.IsInterface = typeContent.Contains("__IL2CPP_IS_INTERFACE = true");
             data.BaseType = ExtractBaseType(typeContent);
             data.Fields = ExtractFields(typeContent);
             data.Methods = ExtractMethods(typeContent);
@@ -222,6 +281,7 @@ class TypeStubGenerator
             var methodName = m.Groups[2].Value;
             if (methodName.StartsWith("_") || methodName.Contains("ctor") || methodName.Contains("Finalize")) continue;
             if (methodName == "MoveNext" || methodName == "SetStateMachine") continue;
+            if (methodName == "Main") continue;
             if (methodName.StartsWith("get_") || methodName.StartsWith("set_") || methodName.StartsWith("add_") || methodName.StartsWith("remove_") || methodName.StartsWith("getStaticF_") || methodName.StartsWith("setStaticF_")) continue;
 
             var returnType = m.Groups[1].Value.Trim();
@@ -312,6 +372,7 @@ class TypeStubGenerator
     {
         var hierarchy = SplitNestingValidated(typeName, ns);
         if (hierarchy.Count == 0) return;
+        if (ShouldSkipTypeStub(ns, hierarchy, data)) return;
 
         for (int i = 0; i < hierarchy.Count - 1; i++)
         {
@@ -327,12 +388,7 @@ class TypeStubGenerator
         var last = hierarchy.Last();
         var (typeNameFinal, tGp) = ConvertToGenericNameWithArity(last.name, last.arity);
 
-        var isInterface = typeNameFinal.Length >= 2
-            && typeNameFinal.StartsWith("I")
-            && char.IsUpper(typeNameFinal[1])
-            && !typeNameFinal.StartsWith("IVR")
-            && !typeNameFinal.StartsWith("IL2")
-            && !data.IsValueType;
+        var isInterface = data.IsInterface;
 
         string baseTypeCs = null;
         if (data.BaseType != null && !data.IsValueType && !isInterface)
@@ -359,6 +415,8 @@ class TypeStubGenerator
         var currentFullType = (string.IsNullOrEmpty(ns) ? "global::" : "global::" + ns + ".") + BuildCsPath("", hierarchy);
         var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         seenNames.Add(safeTypeName);
+        var nestedNameConflicts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        nestedNameConflicts.Add(safeTypeName);
 
         foreach (var field in data.Fields)
         {
@@ -366,6 +424,7 @@ class TypeStubGenerator
             var csType = MapCppTypeToCs(field.Type, ns);
             var fName = Sanitize(field.Name);
             while (!seenNames.Add(fName)) fName += "_";
+            nestedNameConflicts.Add(fName);
             
             if (!_generatedMembers.Add($"{typeSigKey}::F:{fName}:{field.IsStatic}")) continue;
 
@@ -380,6 +439,7 @@ class TypeStubGenerator
         foreach (var method in data.Methods)
         {
             var mName = Sanitize(method.Name);
+            nestedNameConflicts.Add(mName);
             var csReturn = MapCppTypeToCs(method.ReturnType, ns);
             var paramTypes = method.Parameters.Select(p => MapCppTypeToCs(p.Type, ns)).ToList();
             var sigKey = $"{mName}|{string.Join(",", paramTypes)}";
@@ -390,7 +450,9 @@ class TypeStubGenerator
             var returnType = mName == ".ctor" ? "" : (csReturn + " ");
             var methodNameActual = mName == ".ctor" ? Sanitize(typeNameFinal) : mName;
             var staticMod = method.IsStatic ? "static " : "";
-            var body = (mName == ".ctor" || csReturn == "void") ? "{ }" : "=> default;";
+            var body = (mName == ".ctor" || csReturn == "void")
+                ? "{ }"
+                : (csReturn.StartsWith("ref ", StringComparison.Ordinal) ? "=> throw null;" : "=> default;");
             
             if (isInterface)
             {
@@ -403,7 +465,7 @@ class TypeStubGenerator
             }
         }
 
-        GenerateNestedStubs(writer, ns, typeName, currentIndent, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+        GenerateNestedStubs(writer, ns, typeName, currentIndent, nestedNameConflicts);
 
         writer.WriteLine($"{currentIndent}}}");
 
@@ -420,16 +482,64 @@ class TypeStubGenerator
             if (h.Count == 0) continue;
             var (gn, gp) = ConvertToGenericNameWithArity(h[0].name, stub.arity);
             var safeGn = Sanitize(gn);
-            if (seenNames.Add(gn))
+            if (!seenNames.Add(safeGn)) continue;
+
+            var fullCpp = parentCppName + "_" + stub.nestedType;
+            var parentCsPath = BuildCsPath(ns, SplitNestingValidated(parentCppName, ns));
+            if (_realNestedEdgeKeys.Contains(MakeNestedEdgeKey(ns, parentCsPath, safeGn))) continue;
+            var candidateSimpleCsPath = parentCsPath + "." + safeGn;
+            if (_realCsTypePaths.Contains(candidateSimpleCsPath)) continue;
+            var candidateCsPath = BuildCsPath(ns, SplitNestingValidated(fullCpp, ns));
+            if (_realCsTypePaths.Contains(candidateCsPath)) continue;
+
+            if (_types.TryGetValue((ns, parentCppName), out var parentData))
             {
-                var fullCpp = parentCppName + "_" + stub.nestedType;
-                var isStruct = _types.TryGetValue((ns, fullCpp), out var pData) && pData.IsValueType;
-                writer.WriteLine($"{indent}    public partial {(isStruct ? "struct" : "class")} {safeGn}{gp}");
-                writer.WriteLine($"{indent}    {{");
-                GenerateNestedStubs(writer, ns, fullCpp, indent + "    ", new HashSet<string>(StringComparer.OrdinalIgnoreCase));
-                writer.WriteLine($"{indent}    }}");
+                if (parentData.Fields.Any(f => string.Equals(Sanitize(f.Name), safeGn, StringComparison.Ordinal))) continue;
+                if (parentData.Methods.Any(m => string.Equals(Sanitize(m.Name), safeGn, StringComparison.Ordinal))) continue;
+            }
+
+            var isStruct = _types.TryGetValue((ns, fullCpp), out var pData) && pData.IsValueType;
+            if (!isStruct
+                && ns == "GlobalNamespace"
+                && parentCppName.StartsWith("GameplayModifiers_PlayerSaveDataV1", StringComparison.Ordinal)
+                && (safeGn == "EnergyType" || safeGn == "SongSpeed"))
+                isStruct = true;
+            writer.WriteLine($"{indent}    public partial {(isStruct ? "struct" : "class")} {safeGn}{gp}");
+            writer.WriteLine($"{indent}    {{");
+            GenerateNestedStubs(writer, ns, fullCpp, indent + "    ", new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+            writer.WriteLine($"{indent}    }}");
+        }
+    }
+
+    private bool ShouldSkipTypeStub(string ns, List<(string name, int arity)> hierarchy, TypeData data)
+    {
+        if (hierarchy.Count == 0) return true;
+        if (ns == "Microsoft.CodeAnalysis" && hierarchy[^1].name == "EmbeddedAttribute") return true;
+
+        if (hierarchy.Count == 1 && HasChildNamespace(ns, hierarchy[0].name))
+            return true;
+
+        for (int i = 1; i < hierarchy.Count; i++)
+        {
+            var parentCpp = string.Join("_", hierarchy.Take(i).Select(p => p.arity > 0 ? $"{p.name}_{p.arity}" : p.name));
+            if (_types.TryGetValue((ns, parentCpp), out var parentData))
+            {
+                var nestedName = Sanitize(hierarchy[i].name);
+                var fieldCollision = parentData.Fields.Any(f => string.Equals(Sanitize(f.Name), nestedName, StringComparison.Ordinal));
+                if (fieldCollision) return true;
+
+                var methodCollision = parentData.Methods.Any(m => string.Equals(Sanitize(m.Name), nestedName, StringComparison.Ordinal));
+                if (methodCollision) return true;
             }
         }
+
+        return false;
+    }
+
+    private bool HasChildNamespace(string ns, string typeName)
+    {
+        var directChild = string.IsNullOrEmpty(ns) ? typeName : ns + "." + typeName;
+        return _allNamespaces.Contains(directChild) || _allNamespaces.Any(n => n.StartsWith(directChild + ".", StringComparison.Ordinal));
     }
 
     private string MapCppTypeToCs(string cppType, string currentNs)
@@ -444,14 +554,23 @@ class TypeStubGenerator
         cppType = cppType.Replace("::", ".");
         cppType = Regex.Replace(cppType, @"(^|[<,]\s*)\.+", "$1");
 
+        if (cppType == "ActionType" || cppType.EndsWith(".ActionType", StringComparison.Ordinal)) return "System.Object";
+        if (cppType.EndsWith(".PanicFunction", StringComparison.Ordinal) || cppType.EndsWith(".PanicFunction_", StringComparison.Ordinal)) return "System.Object";
+        if (Regex.IsMatch(cppType, @"(?:^|[._])PanicFunction_?$", RegexOptions.CultureInvariant)) return "System.Object";
+        if (Regex.IsMatch(cppType, @"(?:^|[._])(stateData|touchData|buffer|nameBuffer|idBuffer)(?:[._]|$)", RegexOptions.CultureInvariant))
+            return "System.Object";
+
         while (cppType.EndsWith("*"))
             cppType = cppType.Substring(0, cppType.Length - 1).Trim();
+
+        if (Regex.IsMatch(cppType, @"(?:^|[._])PanicFunction_?$", RegexOptions.CultureInvariant)) return "System.Object";
 
         if (cppType.StartsWith("UnityW<"))
         {
             var inner = cppType.Substring(7, cppType.Length - 8);
             return MapCppTypeToCs(inner, currentNs);
         }
+        if (IsGenericPlaceholderToken(cppType)) return "System.Object";
 
         var prim = cppType switch
         {
@@ -464,8 +583,18 @@ class TypeStubGenerator
             "ByRef" => "ref", _ => null
         };
         if (prim != null) return prim;
+        if (GlobalNamespaceRoots.Contains(cppType)) return "global::" + SanitizePathSegment(cppType);
+        if (cppType.StartsWith("Zenject.Internal.", StringComparison.Ordinal)
+            || cppType.Contains("X509CertificateImpl", StringComparison.Ordinal)
+            || cppType.Contains("X509Certificate2Impl", StringComparison.Ordinal)
+            || cppType.Contains("LocalCertSelectionCallback", StringComparison.Ordinal)
+            || cppType.Contains("ServerCertValidationCallback", StringComparison.Ordinal)
+            || cppType.Contains("WebConnectionTunnel", StringComparison.Ordinal)
+            || cppType.Contains("Dictionary_2_Enumerator", StringComparison.Ordinal)
+            || cppType.Contains("UnityEngine.UIElements.ActionType", StringComparison.Ordinal))
+            return "System.Object";
 
-        if (cppType.StartsWith("cordl_internals.") || cppType.StartsWith("MS.") || cppType.Contains(".HEU") || cppType.Contains(".HAPI") || cppType.Contains(".Test"))
+        if (cppType.StartsWith("cordl_internals.") || cppType.StartsWith("MS.") || cppType.StartsWith("Internal.") || cppType.Contains(".HEU") || cppType.Contains(".HAPI") || cppType.Contains(".Test"))
             return "System.Object";
 
         if (Regex.IsMatch(cppType, @"^(T|T[A-Z][a-z0-9]*|T[0-9]+)$"))
@@ -485,7 +614,8 @@ class TypeStubGenerator
                 var lastDotBase = baseTypeStr.LastIndexOf('.');
                 var baseTypeLast = lastDotBase >= 0 ? baseTypeStr.Substring(lastDotBase + 1) : baseTypeStr;
                 
-                var h = SplitNesting(baseTypeLast);
+                var validationNs = lastDotBase >= 0 ? baseTypeStr.Substring(0, lastDotBase) : currentNs;
+                var h = SplitNestingValidated(baseTypeLast, validationNs);
                 var argsArr = SplitGenericArgs(argsPart);
                 var processedArgs = argsArr.Select(a =>
                 {
@@ -493,6 +623,21 @@ class TypeStubGenerator
                     var m = MapCppTypeToCs(a, currentNs);
                     return m == "void" ? "System.Object" : m;
                 }).ToList();
+
+                if (baseTypeLast == "ArrayW" || baseTypeLast == "Array")
+                {
+                    if (processedArgs.Count == 0) return "global::System.Array";
+                    return NormalizeArrayElementType(processedArgs[0]) + "[]";
+                }
+                if (baseTypeLast == "ByRef" || baseTypeLast == "ByRefConst")
+                {
+                    if (processedArgs.Count == 0) return "System.Object";
+                    return "ref " + NormalizeByRefTargetType(processedArgs[0]);
+                }
+                if (baseTypeLast == "Ptr")
+                {
+                    return "nint";
+                }
 
                 var hBase = SplitNestingValidated(baseTypeStr, currentNs);
                 if (hBase.Count > 1)
@@ -536,7 +681,8 @@ class TypeStubGenerator
                 if (argIdx < processedArgs.Count && segments.Count > 0)
                 {
                     var lastSeg = segments[segments.Count - 1];
-                    if (!lastSeg.Contains("<"))
+                    var nameLooksLikeVersionedOrMangledNonGeneric = Regex.IsMatch(baseTypeLast, @"_\d+_", RegexOptions.CultureInvariant);
+                    if (!lastSeg.Contains("<") && !nameLooksLikeVersionedOrMangledNonGeneric)
                         segments[segments.Count - 1] = lastSeg + "<" + string.Join(", ", processedArgs.Skip(argIdx)) + ">";
                 }
 
@@ -551,7 +697,7 @@ class TypeStubGenerator
                 if (lastDotBase >= 0)
                 {
                     var nsPart = baseTypeStr.Substring(0, lastDotBase);
-                    prefix = MapCppTypeToCs(nsPart, currentNs);
+                    prefix = MapCppNamespaceToCs(nsPart, currentNs);
                     if (!prefix.EndsWith(".")) prefix += ".";
                 }
 
@@ -562,7 +708,11 @@ class TypeStubGenerator
                 var finalRes = string.Join(".", partsRes);
                 if (finalRes.StartsWith("global::") || finalRes.StartsWith("ref ") || finalRes.EndsWith("[]")) return finalRes;
 
-                if (prefix == "" && !isAbsolute) 
+                if (prefix == "" && SystemTypes.Contains(baseTypeLast))
+                    return "global::System." + finalRes;
+                if (prefix == "" && IsNamespaceQualifiedTypePath(finalRes, currentNs))
+                    return "global::" + finalRes;
+                if (prefix == "" && !isAbsolute)
                     return (string.IsNullOrEmpty(currentNs) ? "global::" : "global::" + currentNs + ".") + finalRes;
                 
                 return "global::" + finalRes.Replace("global::", "");
@@ -578,22 +728,116 @@ class TypeStubGenerator
             {
                 var nsPart = cppType.Substring(0, lastDot);
                 var typePart = cppType.Substring(lastDot + 1);
+                if (IsGenericPlaceholderToken(typePart)) return "System.Object";
                 var res = ResolveUnderscoreNested(typePart, nsPart);
                 if (res != null) return "global::" + res;
+
+                var directNs = FindTypeNamespace(typePart, currentNs);
+                if (directNs != null)
+                    return "global::" + CloseOpenGenericTypeArgs(BuildCsPath(directNs, SplitNestingValidated(typePart, directNs)));
             }
             var parts = cppType.Split('.').Where(p => !string.IsNullOrEmpty(p)).Select(p => SanitizePathSegment(p));
             var dottedRes = string.Join(".", parts);
             if (isAbsolute || dottedRes.StartsWith("global::")) return "global::" + dottedRes.Replace("global::", "");
-            return (string.IsNullOrEmpty(currentNs) ? "global::" : "global::" + currentNs + ".") + dottedRes;
+            return "global::" + dottedRes;
         }
 
         var resolved = ResolveUnderscoreNested(cppType, currentNs);
-        if (resolved != null) return "global::" + resolved;
+        if (resolved != null) return "global::" + CloseOpenGenericTypeArgs(resolved);
 
         if (SystemTypes.Contains(cppType)) return "global::System." + Sanitize(cppType);
+        if (cppType == "UnityEngine.UIElements.ActionType") return "System.Object";
 
         if (isAbsolute) return "global::" + SanitizePathSegment(cppType);
         return (string.IsNullOrEmpty(currentNs) ? "global::" : "global::" + currentNs + ".") + SanitizePathSegment(cppType);
+    }
+
+    private static string MakeNestedEdgeKey(string ns, string parentCsPath, string childName)
+    {
+        return ns + "|" + parentCsPath + "|" + childName;
+    }
+
+    private static string CloseOpenGenericTypeArgs(string csTypePath)
+    {
+        if (string.IsNullOrWhiteSpace(csTypePath)) return csTypePath;
+        return Regex.Replace(
+            csTypePath,
+            @"(?<=<|,\s*)(?:T(?:Key|Value|Result|\d+)?|[A-Z])(?=\s*(?:,|>))",
+            "System.Object");
+    }
+
+    private static bool IsGenericPlaceholderToken(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token)) return false;
+        token = token.Trim();
+        return Regex.IsMatch(token, @"^(T([A-Z0-9_].*)?|P\d+|ARG\d+|[A-Z])$");
+    }
+
+    private bool IsNamespaceQualifiedTypePath(string path, string currentNs)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        var dot = path.IndexOf('.');
+        if (dot <= 0) return false;
+
+        var first = path.Substring(0, dot).TrimStart('@');
+        if (_namespaceRoots.Contains(first) || GlobalNamespaceRoots.Contains(first))
+            return true;
+
+        var firstTypeNs = FindTypeNamespace(first, currentNs);
+        if (firstTypeNs != null && !string.Equals(firstTypeNs, currentNs, StringComparison.Ordinal))
+            return true;
+
+        return firstTypeNs == null && char.IsUpper(first[0]);
+    }
+
+    private string MapCppNamespaceToCs(string ns, string currentNs)
+    {
+        if (string.IsNullOrWhiteSpace(ns)) return "";
+        ns = ns.Trim().Replace("::", ".").Trim('.');
+
+        if (ns.Contains("."))
+            return "global::" + string.Join(".", ns.Split('.').Where(p => !string.IsNullOrWhiteSpace(p)).Select(SanitizePathSegment));
+
+        if (!string.IsNullOrEmpty(currentNs))
+        {
+            var direct = currentNs + "." + ns;
+            if (_allNamespaces.Contains(direct))
+                return "global::" + direct;
+
+            var currentRoot = currentNs.Split('.')[0];
+            if (_namespaceLeafToFull.TryGetValue(ns, out var rootedSet))
+            {
+                string rootedMatch = null;
+                foreach (var fullNs in rootedSet)
+                {
+                    if (!fullNs.StartsWith(currentRoot + ".", StringComparison.Ordinal)) continue;
+                    if (rootedMatch != null) { rootedMatch = null; break; }
+                    rootedMatch = fullNs;
+                }
+                if (rootedMatch != null) return "global::" + rootedMatch;
+            }
+        }
+
+        if (_namespaceLeafToFull.TryGetValue(ns, out var set) && set.Count == 1)
+            return "global::" + set.First();
+        if (GlobalNamespaceRoots.Contains(ns))
+            return "global::" + ns;
+
+        return "global::" + SanitizePathSegment(ns);
+    }
+
+    private static string NormalizeArrayElementType(string type)
+    {
+        if (string.IsNullOrWhiteSpace(type)) return "System.Object";
+        if (type.StartsWith("ref ", StringComparison.Ordinal))
+            type = type.Substring(4).Trim();
+        return type == "void" ? "System.Object" : type;
+    }
+
+    private static string NormalizeByRefTargetType(string type)
+    {
+        if (string.IsNullOrWhiteSpace(type)) return "System.Object";
+        return type.StartsWith("ref ", StringComparison.Ordinal) ? type.Substring(4).Trim() : type;
     }
 
     private static string SanitizePathSegment(string segment)
@@ -765,13 +1009,28 @@ class TypeStubGenerator
         return (name, gp);
     }
 
+    private void IndexTypeName(string typeName, string ns)
+    {
+        void Add(string key)
+        {
+            if (!_typeNameToNamespaces.TryGetValue(key, out var set))
+            {
+                set = new HashSet<string>(StringComparer.Ordinal);
+                _typeNameToNamespaces[key] = set;
+            }
+            set.Add(ns);
+        }
+
+        Add(typeName);
+        var arityMatch = Regex.Match(typeName, @"^(.+?)_(\d+)$");
+        if (arityMatch.Success)
+            Add(arityMatch.Groups[1].Value);
+    }
+
     private string FindTypeNamespace(string typeName, string currentNs = null)
     {
-        var matches = _types.Keys
-            .Where(k => k.typeName == typeName || (k.typeName.StartsWith(typeName + "_") && k.typeName.Length > typeName.Length + 1 && char.IsDigit(k.typeName[typeName.Length + 1])))
-            .Select(k => k.ns).Distinct().ToList();
-        if (matches.Count == 0) return null;
-        if (matches.Count == 1) return matches[0];
+        if (!_typeNameToNamespaces.TryGetValue(typeName, out var matches) || matches.Count == 0) return null;
+        if (matches.Count == 1) return matches.First();
         if (currentNs != null && matches.Contains(currentNs)) return currentNs;
         return null;
     }
@@ -831,7 +1090,7 @@ class TypeStubGenerator
     }
 }
 
-class TypeData { public string Namespace { get; set; } = ""; public string TypeName { get; set; } = ""; public List<FieldInfo> Fields { get; set; } = new(); public List<MethodInfo> Methods { get; set; } = new(); public bool IsValueType { get; set; } public bool IsStatic { get; set; } public bool IsAbstract { get; set; } public string BaseType { get; set; } }
+class TypeData { public string Namespace { get; set; } = ""; public string TypeName { get; set; } = ""; public List<FieldInfo> Fields { get; set; } = new(); public List<MethodInfo> Methods { get; set; } = new(); public bool IsValueType { get; set; } public bool IsInterface { get; set; } public bool IsStatic { get; set; } public bool IsAbstract { get; set; } public string BaseType { get; set; } }
 class FieldInfo { public string Type { get; set; } = ""; public string Name { get; set; } = ""; public bool IsStatic { get; set; } }
 class MethodInfo { public string ReturnType { get; set; } = ""; public string Name { get; set; } = ""; public bool IsStatic { get; set; } public List<ParameterInfo> Parameters { get; set; } = new(); }
 class ParameterInfo { public string Type { get; set; } = ""; public string Name { get; set; } = ""; }
