@@ -4,7 +4,8 @@ a POC for making beat saber quest mods in C#
 
 todo
 
-- TypeGenerator (dont know how to get working)
+- make sure TypeGenerator and Transpiler both work for the gen types
+- change SampleMod to use the new TypeGenerator types
 
 what is working?
 
