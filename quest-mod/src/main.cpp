@@ -29,10 +29,10 @@ MAKE_HOOK_MATCH(
 
     OnLevelScreenActivateHook(self, firstActivation, addedToHierarchy, screenSystemEnabling);
     if (Enabled) {
-        auto detailView = self->_standardLevelDetailView;
-        auto actionButton = detailView->actionButton;
-        auto gameObject = actionButton->get_gameObject();
-        auto buttonText = gameObject->template GetComponentInChildren<HMUI::CurvedTextMeshPro*>();
+        GlobalNamespace::StandardLevelDetailView* detailView = self->_standardLevelDetailView;
+        UnityEngine::UI::Button* actionButton = detailView->actionButton;
+        UnityEngine::GameObject* gameObject = actionButton->get_gameObject();
+        HMUI::CurvedTextMeshPro* buttonText = gameObject->GetComponentInChildren<HMUI::CurvedTextMeshPro*>();
         buttonText->set_text(ButtonText);
     }
 }

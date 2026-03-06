@@ -684,7 +684,6 @@ class StatementGenerator
     {
         var lines = new List<string>();
         var typeStr = localDecl.Declaration.Type.ToString();
-        var type = typeStr == "var" ? "auto" : _typeMapper.MapType(typeStr);
         
         foreach (var variable in localDecl.Declaration.Variables)
         {
@@ -692,59 +691,87 @@ class StatementGenerator
             if (variable.Initializer != null)
             {
                 var init = GenerateExpression(variable.Initializer.Value);
-                lines.Add($"{type} {name} = {init};");
                 
-                if (typeStr == "var" && variable.Initializer.Value is InvocationExpressionSyntax invocation)
+                string actualType = "auto";
+                if (typeStr == "var")
                 {
-                    if (invocation.Expression is MemberAccessExpressionSyntax memberAccess)
+                    if (variable.Initializer.Value is InvocationExpressionSyntax invocation)
                     {
-                        var objExpr = memberAccess.Expression;
-                        var methodName = memberAccess.Name.Identifier.Text;
+                        if (invocation.Expression is MemberAccessExpressionSyntax memberAccess)
+                        {
+                            var methodName = memberAccess.Name.Identifier.Text;
+                            
+                            if (methodName == "GetComponentInChildren" || methodName == "GetComponent")
+                            {
+                                if (memberAccess.Name is GenericNameSyntax genericName && genericName.TypeArgumentList.Arguments.Count > 0)
+                                {
+                                    var typeArg = genericName.TypeArgumentList.Arguments[0].ToString();
+                                    actualType = GetQualifiedType(typeArg);
+                                    _varTypes[name] = typeArg;
+                                    _addUsedType(typeArg);
+                                }
+                            }
+                            else
+                            {
+                                var objExpr = memberAccess.Expression;
+                                if (objExpr is IdentifierNameSyntax idSyntax)
+                                {
+                                    var objVarName = idSyntax.Identifier.Text;
+                                    if (_varTypes.TryGetValue(objVarName, out var objVarType))
+                                    {
+                                        if (_methodReturnTypes.TryGetValue((objVarType, methodName), out var returnType))
+                                        {
+                                            actualType = GetQualifiedType(returnType);
+                                            _varTypes[name] = returnType;
+                                            _addUsedType(returnType);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    else if (variable.Initializer.Value is MemberAccessExpressionSyntax fieldAccess)
+                    {
+                        var objExpr = fieldAccess.Expression;
+                        var memberName = fieldAccess.Name.Identifier.Text;
                         
                         if (objExpr is IdentifierNameSyntax idSyntax)
                         {
                             var objVarName = idSyntax.Identifier.Text;
                             if (_varTypes.TryGetValue(objVarName, out var objVarType))
                             {
-                                if (_methodReturnTypes.TryGetValue((objVarType, methodName), out var returnType))
+                                if (_fieldTypes.TryGetValue((objVarType, memberName), out var fieldType))
                                 {
-                                    _varTypes[name] = returnType;
-                                    _addUsedType(returnType);
+                                    actualType = GetQualifiedType(fieldType);
+                                    _varTypes[name] = fieldType;
+                                    _addUsedType(fieldType);
                                 }
                             }
                         }
                     }
                 }
-                else if (typeStr == "var" && variable.Initializer.Value is MemberAccessExpressionSyntax fieldAccess)
+                else
                 {
-                    var objExpr = fieldAccess.Expression;
-                    var memberName = fieldAccess.Name.Identifier.Text;
-                    
-                    if (objExpr is IdentifierNameSyntax idSyntax)
-                    {
-                        var objVarName = idSyntax.Identifier.Text;
-                        if (_varTypes.TryGetValue(objVarName, out var objVarType))
-                        {
-                            if (_fieldTypes.TryGetValue((objVarType, memberName), out var fieldType))
-                            {
-                                _varTypes[name] = fieldType;
-                                _addUsedType(fieldType);
-                            }
-                        }
-                    }
-                }
-                else if (typeStr != "var")
-                {
+                    actualType = _typeMapper.MapType(typeStr);
                     _varTypes[name] = typeStr;
                 }
+                
+                lines.Add($"{actualType} {name} = {init};");
             }
             else
             {
+                var type = typeStr == "var" ? "auto" : _typeMapper.MapType(typeStr);
                 lines.Add($"{type} {name};");
             }
         }
 
         return lines;
+    }
+
+    private string GetQualifiedType(string typeName)
+    {
+        var ns = _getNamespaceForType(typeName);
+        return $"{ns}::{typeName}*";
     }
 
     private string GenerateExpression(ExpressionSyntax expr)
@@ -825,7 +852,7 @@ class StatementGenerator
                             typeArg = GenerateExpression(invocation.ArgumentList.Arguments[0].Expression);
                         }
                         var ns = _getNamespaceForType(typeArg);
-                        return $"{objExpr}->template GetComponentInChildren<{ns}::{typeArg}*>()";
+                        return $"{objExpr}->GetComponentInChildren<{ns}::{typeArg}*>()";
                     }
                     
                     return $"{objExpr}->{methodName}({args})";
