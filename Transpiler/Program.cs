@@ -91,6 +91,9 @@ class Transpiler
     private Dictionary<(string Class, string Field), string> _fieldTypes = new();
     private Dictionary<(string Class, string Method), string> _methodReturnTypes = new();
     private ModInfo _modInfo = new() { Id = "mod", Version = "1.0.0" };
+    private Dictionary<string, string> _typeNamespaces = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<string> _importedNamespaces = new();
+    private SemanticModel? _semanticModel;
 
     public void AddSource(string code, string path)
     {
@@ -115,7 +118,27 @@ class Transpiler
         
         foreach (var tree in syntaxTrees)
         {
+            ExtractUsingDirectives(tree);
+        }
+        
+        foreach (var tree in syntaxTrees)
+        {
+            _semanticModel = _compilation.GetSemanticModel(tree);
             ProcessSyntaxTree(tree);
+        }
+    }
+
+    private void ExtractUsingDirectives(SyntaxTree tree)
+    {
+        var root = tree.GetRoot();
+        
+        foreach (var usingDirective in root.DescendantNodes().OfType<UsingDirectiveSyntax>())
+        {
+            var nsName = usingDirective.Name?.ToString() ?? "";
+            if (!string.IsNullOrEmpty(nsName))
+            {
+                _importedNamespaces.Add(nsName);
+            }
         }
     }
 
@@ -128,6 +151,26 @@ class Transpiler
             if (node is ClassDeclarationSyntax classDecl)
             {
                 ProcessClass(classDecl);
+            }
+            else if (node is BaseTypeSyntax baseType && _semanticModel != null)
+            {
+                var typeSymbol = _semanticModel.GetTypeInfo(baseType).Type;
+                if (typeSymbol != null)
+                {
+                    var typeName = typeSymbol.Name;
+                    var nsName = typeSymbol.ContainingNamespace?.ToDisplayString() ?? "GlobalNamespace";
+                    _typeNamespaces[typeName] = nsName.Replace(".", "::");
+                }
+            }
+            else if (node is TypeSyntax typeSyntax && _semanticModel != null)
+            {
+                var typeSymbol = _semanticModel.GetTypeInfo(typeSyntax).Type;
+                if (typeSymbol != null && !string.IsNullOrEmpty(typeSymbol.Name))
+                {
+                    var typeName = typeSymbol.Name;
+                    var nsName = typeSymbol.ContainingNamespace?.ToDisplayString() ?? "GlobalNamespace";
+                    _typeNamespaces[typeName] = nsName.Replace(".", "::");
+                }
             }
         }
     }
@@ -147,6 +190,43 @@ class Transpiler
         var modAttr = classDecl.AttributeLists
             .SelectMany(a => a.Attributes)
             .FirstOrDefault(a => a.Name.ToString() == "Mod" || a.Name.ToString() == "ModAttribute");
+
+        var hasHookMethod = classDecl.Members
+            .OfType<MethodDeclarationSyntax>()
+            .Any(m => m.AttributeLists.SelectMany(a => a.Attributes)
+                .Any(a => a.Name.ToString() == "Hook" || a.Name.ToString() == "HookAttribute"));
+
+        var isStubType = modAttr == null && !hasHookMethod && !classInfo.IsStatic;
+
+        if (isStubType)
+        {
+            var gameNamespace = ExtractGameNamespace(classDecl);
+            if (!string.IsNullOrEmpty(gameNamespace))
+            {
+                _typeNamespaces[classInfo.Name] = gameNamespace;
+            }
+            
+            foreach (var member in classDecl.Members)
+            {
+                if (member is FieldDeclarationSyntax fieldDecl)
+                {
+                    var fieldType = fieldDecl.Declaration.Type.ToString();
+                    foreach (var variable in fieldDecl.Declaration.Variables)
+                    {
+                        _fieldTypes[(classInfo.Name, variable.Identifier.Text)] = fieldType;
+                    }
+                }
+                else if (member is MethodDeclarationSyntax methodDecl)
+                {
+                    var returnType = methodDecl.ReturnType.ToString();
+                    if (returnType != "void" && returnType != "default")
+                    {
+                        _methodReturnTypes[(classInfo.Name, methodDecl.Identifier.Text)] = returnType;
+                    }
+                }
+            }
+            return;
+        }
 
         if (modAttr?.ArgumentList?.Arguments.Count >= 2)
         {
@@ -225,6 +305,25 @@ class Transpiler
         _classes.Add(classInfo);
     }
 
+    private string ExtractGameNamespace(ClassDeclarationSyntax classDecl)
+    {
+        var leadingTrivia = classDecl.GetLeadingTrivia();
+        foreach (var trivia in leadingTrivia)
+        {
+            if (trivia.IsKind(SyntaxKind.SingleLineCommentTrivia) || trivia.IsKind(SyntaxKind.MultiLineCommentTrivia))
+            {
+                var commentText = trivia.ToString();
+                var nsMatch = System.Text.RegularExpressions.Regex.Match(commentText, @"namespace[:\s]+([a-zA-Z0-9_.:]+)\s*", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (nsMatch.Success)
+                {
+                    return nsMatch.Groups[1].Value.Replace(".", "::");
+                }
+            }
+        }
+        
+        return "";
+    }
+
     private string GetNamespace(SyntaxNode node)
     {
         var nsDecl = node.Ancestors().OfType<NamespaceDeclarationSyntax>().FirstOrDefault();
@@ -233,20 +332,49 @@ class Transpiler
 
     private string GetNamespaceForType(string typeName)
     {
-        var knownNamespaces = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        if (_typeNamespaces.TryGetValue(typeName, out var ns))
         {
-            { "StandardLevelDetailViewController", "GlobalNamespace" },
-            { "StandardLevelDetailView", "GlobalNamespace" },
-            { "GameplayCoreSceneSetup", "GlobalNamespace" },
-            { "CurvedTextMeshPro", "HMUI" },
-            { "Button", "UnityEngine::UI" },
-            { "GameObject", "UnityEngine" },
-            { "Transform", "UnityEngine" },
-            { "Component", "UnityEngine" },
-            { "RectTransform", "UnityEngine" },
-        };
+            return ns;
+        }
         
-        return knownNamespaces.TryGetValue(typeName, out var ns) ? ns : "GlobalNamespace";
+        if (_semanticModel != null)
+        {
+            var typeInfo = _semanticModel.Compilation.GetTypeByMetadataName(typeName);
+            if (typeInfo != null)
+            {
+                var namespaceName = typeInfo.ContainingNamespace?.ToDisplayString() ?? "GlobalNamespace";
+                var cppNamespace = namespaceName.Replace(".", "::");
+                _typeNamespaces[typeName] = cppNamespace;
+                return cppNamespace;
+            }
+        }
+        
+        foreach (var importedNs in _importedNamespaces)
+        {
+            var potentialSymbol = _semanticModel?.Compilation.GetTypeByMetadataName($"{importedNs}.{typeName}");
+            if (potentialSymbol != null)
+            {
+                var cppNamespace = importedNs.Replace(".", "::");
+                _typeNamespaces[typeName] = cppNamespace;
+                return cppNamespace;
+            }
+        }
+        
+        return "GlobalNamespace";
+    }
+
+    private void DiscoverTypeNamespace(string typeName, SyntaxNode contextNode)
+    {
+        if (_semanticModel == null || string.IsNullOrEmpty(typeName) || _typeNamespaces.ContainsKey(typeName))
+            return;
+
+        var symbolInfo = _semanticModel.GetSymbolInfo(contextNode);
+        if (symbolInfo.Symbol is ITypeSymbol typeSymbol)
+        {
+            var namespaceName = typeSymbol.ContainingNamespace?.ToDisplayString() ?? "GlobalNamespace";
+            var cppNamespace = namespaceName.Replace(".", "::");
+            _typeNamespaces[typeName] = cppNamespace;
+        }
     }
 
     private void ProcessMethod(MethodDeclarationSyntax methodDecl, ClassInfo? classInfo = null)

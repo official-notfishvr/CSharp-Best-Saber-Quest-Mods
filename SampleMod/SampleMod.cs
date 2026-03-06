@@ -31,27 +31,31 @@ public static class TestMod
     }
 }
 
-// would be auto gen by typegen when its done
+// namespace: GlobalNamespace
 public class StandardLevelDetailViewController
 {
     public StandardLevelDetailView _standardLevelDetailView;
 }
 
+// namespace: GlobalNamespace
 public class StandardLevelDetailView
 {
     public Button actionButton;
 }
 
+// namespace: UnityEngine.UI
 public class Button
 {
     public GameObject get_GameObject() => default;
 }
 
+// namespace: UnityEngine
 public class GameObject
 {
     public T GetComponentInChildren<T>() => default;
 }
 
+// namespace: HMUI
 public class CurvedTextMeshPro
 {
     public void set_Text(string text) { }
