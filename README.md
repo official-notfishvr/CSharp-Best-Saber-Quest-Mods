@@ -9,7 +9,7 @@ todo
 what is working?
 
 - SampleMod works but has its own made types because TypeGenerator is not made
-- Transpiler works for SampleMod (have not tested other stuff yet) but has alot of hard coded stuff
+- Transpiler works for SampleMod (have not tested other stuff yet) but has alot (basically everything) of hard coded stuff
 
 ## Credits
 
