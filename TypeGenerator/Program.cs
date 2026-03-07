@@ -310,17 +310,31 @@ class TypeStubGenerator
             if (!seenNames.Add(fName))
                 continue;
 
-            var nextLine = lines[i + 1].Trim();
-            if (nextLine.Contains("constexpr") || nextLine.Contains("const "))
+            var declParts = new List<string>();
+            for (int j = i + 1; j < lines.Length && j <= i + 5; j++)
+            {
+                var part = lines[j].Trim();
+                if (part.StartsWith("/// @brief"))
+                    break;
+                if (string.IsNullOrWhiteSpace(part))
+                    continue;
+                declParts.Add(part);
+                if (part.Contains(";"))
+                    break;
+            }
+            if (declParts.Count == 0)
+                continue;
+            var declLine = string.Join(" ", declParts);
+            if (declLine.Contains("constexpr") || declLine.Contains("const "))
                 continue;
 
             string fType = null;
-            var propMatch = Regex.Match(nextLine, @"__declspec\(property\([^)]+\)\)\s+(.+?)\s+" + Regex.Escape(fName));
+            var propMatch = Regex.Match(declLine, @"__declspec\(property\([^)]+\)\)\s+(.+?)\s+" + Regex.Escape(fName));
             if (propMatch.Success)
                 fType = propMatch.Groups[1].Value.Trim();
             else
             {
-                var fieldMatch = Regex.Match(nextLine, @"^(?:static\s+)?(.+?)\s+" + Regex.Escape(fName) + @"\s*;");
+                var fieldMatch = Regex.Match(declLine, @"^(?:static\s+)?(.+?)\s+" + Regex.Escape(fName) + @"\s*;");
                 if (fieldMatch.Success)
                     fType = fieldMatch.Groups[1].Value.Trim();
             }
@@ -351,10 +365,26 @@ class TypeStubGenerator
 
             if (!line.StartsWith("/// @brief Method"))
                 continue;
-            if (nextLine.Contains("template <"))
-                continue;
 
-            var m = Regex.Match(nextLine, @"(?:inline\s+|static\s+|virtual\s+)+(.+?)\s+(\w+)\s*\(([^)]*)\)");
+            var declLine = nextLine;
+            var genericParameters = new List<string>();
+            if (declLine.StartsWith("template <", StringComparison.Ordinal))
+            {
+                genericParameters = ExtractTemplateTypeParameters(declLine);
+                var afterTemplate = Regex.Replace(declLine, @"^template\s*<[^>]+>\s*", "");
+                if (afterTemplate.Contains("("))
+                {
+                    declLine = afterTemplate.Trim();
+                }
+                else
+                {
+                    if (i + 2 >= lines.Length)
+                        continue;
+                    declLine = lines[i + 2].Trim();
+                }
+            }
+
+            var m = Regex.Match(declLine, @"(?:inline\s+|static\s+|virtual\s+)+(.+?)\s+(\w+)\s*\(([^)]*)\)");
             if (!m.Success)
                 continue;
 
@@ -365,13 +395,20 @@ class TypeStubGenerator
                 continue;
             if (methodName == "Main")
                 continue;
-            if (methodName.StartsWith("get_") || methodName.StartsWith("set_") || methodName.StartsWith("add_") || methodName.StartsWith("remove_") || methodName.StartsWith("getStaticF_") || methodName.StartsWith("setStaticF_"))
+            var isAccessor = methodName.StartsWith("get_")
+                || methodName.StartsWith("set_")
+                || methodName.StartsWith("add_")
+                || methodName.StartsWith("remove_");
+            var keepAccessor = methodName == "get_gameObject" || methodName == "get_GameObject" || methodName == "set_text";
+            if (isAccessor && !keepAccessor)
+                continue;
+            if (methodName.StartsWith("getStaticF_") || methodName.StartsWith("setStaticF_"))
                 continue;
 
             var returnType = m.Groups[1].Value.Trim();
             var parameters = m.Groups[3].Value;
 
-            var sig = methodName + "(" + NormalizeParamSig(parameters) + ")";
+            var sig = methodName + "`" + genericParameters.Count + "(" + NormalizeParamSig(parameters) + ")";
             if (!seenSigs.Add(sig))
                 continue;
 
@@ -381,7 +418,8 @@ class TypeStubGenerator
                     ReturnType = returnType,
                     Name = methodName,
                     Parameters = ParseParameters(parameters),
-                    IsStatic = nextLine.Contains("static "),
+                    IsStatic = declLine.Contains("static "),
+                    GenericParameters = genericParameters,
                 }
             );
         }
@@ -392,6 +430,14 @@ class TypeStubGenerator
     private static string NormalizeParamSig(string parameters)
     {
         return Regex.Replace(parameters, @"\s+", "").ToLowerInvariant();
+    }
+
+    private static List<string> ExtractTemplateTypeParameters(string templateLine)
+    {
+        var result = new List<string>();
+        foreach (Match m in Regex.Matches(templateLine, @"(?:typename|class)\s+([A-Za-z_]\w*)"))
+            result.Add(m.Groups[1].Value);
+        return result;
     }
 
     private List<ParameterInfo> ParseParameters(string parameters)
@@ -466,9 +512,31 @@ class TypeStubGenerator
         var match = Regex.Match(content, @"class\s+CORDL_TYPE\s+\w+\s*:\s*public\s+(.+?)\s*\{");
         if (match.Success)
         {
-            return match.Groups[1].Value.Trim();
+            var baseType = match.Groups[1].Value.Trim();
+            baseType = TakeFirstTopLevelBaseType(baseType);
+            baseType = Regex.Replace(baseType, @"\b(public|private|protected|virtual)\b", "").Trim();
+            return baseType;
         }
         return null;
+    }
+
+    private static string TakeFirstTopLevelBaseType(string baseTypeList)
+    {
+        if (string.IsNullOrWhiteSpace(baseTypeList))
+            return baseTypeList;
+
+        var depth = 0;
+        for (int i = 0; i < baseTypeList.Length; i++)
+        {
+            var c = baseTypeList[i];
+            if (c == '<')
+                depth++;
+            else if (c == '>')
+                depth = Math.Max(0, depth - 1);
+            else if (c == ',' && depth == 0)
+                return baseTypeList.Substring(0, i).Trim();
+        }
+        return baseTypeList.Trim();
     }
 
     private void GenerateTypeStub(StreamWriter writer, string typeName, string ns, TypeData data)
@@ -499,6 +567,17 @@ class TypeStubGenerator
         if (data.BaseType != null && !data.IsValueType && !isInterface)
         {
             var mapped = MapCppTypeToCs(data.BaseType, ns);
+            if ((mapped == "System.Object" || mapped == "global::System.Object")
+                && data.BaseType.EndsWith("::TextMeshProUGUI", StringComparison.Ordinal)
+                && !data.BaseType.Contains('<')
+                && !data.BaseType.Contains(','))
+            {
+                var firstBase = data.BaseType.Split(',')[0];
+                firstBase = Regex.Replace(firstBase, @"\b(public|private|protected|virtual)\b", "").Trim();
+                var normalized = firstBase.Replace("::", ".").Trim('.');
+                if (normalized.Contains('.'))
+                    mapped = "global::" + string.Join(".", normalized.Split('.').Where(p => !string.IsNullOrWhiteSpace(p)).Select(SanitizePathSegment));
+            }
             if (mapped != "object" && mapped != "string" && !mapped.StartsWith("global::System."))
             {
                 var currentFull = string.IsNullOrEmpty(ns) ? "global::" + Sanitize(typeNameFinal) : "global::" + ns + "." + Sanitize(typeNameFinal);
@@ -523,6 +602,7 @@ class TypeStubGenerator
         seenNames.Add(safeTypeName);
         var nestedNameConflicts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         nestedNameConflicts.Add(safeTypeName);
+        var aliasProperties = new List<(string aliasName, string backingName, string csType, bool isStatic)>();
 
         foreach (var field in data.Fields)
         {
@@ -542,36 +622,113 @@ class TypeStubGenerator
 
             var staticMod = field.IsStatic ? "static " : "";
             writer.WriteLine($"{currentIndent}    public {staticMod}{csType} {fName};");
+
+            if (fName.Length > 1 && fName[0] == '_' && char.IsLower(fName[1]))
+            {
+                var alias = Sanitize(fName.Substring(1));
+                if (string.Equals(alias, "gameObject", StringComparison.Ordinal))
+                    continue;
+                if (seenNames.Add(alias))
+                {
+                    aliasProperties.Add((alias, fName, csType, field.IsStatic));
+                    nestedNameConflicts.Add(alias);
+                }
+            }
+        }
+
+        foreach (var alias in aliasProperties)
+        {
+            var staticMod = alias.isStatic ? "static " : "";
+            writer.WriteLine($"{currentIndent}    public {staticMod}{alias.csType} {alias.aliasName} {{ get => {alias.backingName}; set => {alias.backingName} = value; }}");
         }
 
         var seenSigs = new HashSet<string>();
+        string lowerGameObjectReturnType = null;
+        bool lowerGameObjectStatic = false;
+        bool hasUpperGameObject = false;
+        string lowerSetTextParamType = null;
+        bool lowerSetTextStatic = false;
+        bool hasUpperSetText = false;
         foreach (var method in data.Methods)
         {
             var mName = Sanitize(method.Name);
             nestedNameConflicts.Add(mName);
-            var csReturn = MapCppTypeToCs(method.ReturnType, ns);
-            var paramTypes = method.Parameters.Select(p => MapCppTypeToCs(p.Type, ns)).ToList();
-            var sigKey = $"{mName}|{string.Join(",", paramTypes)}";
+            var genericParams = method.GenericParameters ?? new List<string>();
+            var csReturn = genericParams.Contains(method.ReturnType.Trim(), StringComparer.Ordinal) ? method.ReturnType.Trim() : MapCppTypeToCs(method.ReturnType, ns);
+            var paramTypes = method.Parameters
+                .Select(p => genericParams.Contains(p.Type.Trim(), StringComparer.Ordinal) ? p.Type.Trim() : MapCppTypeToCs(p.Type, ns))
+                .ToList();
+            var sigKey = $"{mName}`{genericParams.Count}|{string.Join(",", paramTypes)}";
             if (!seenSigs.Add(sigKey))
                 continue;
             if (!_generatedMembers.Add($"{typeSigKey}::M:{sigKey}:{method.IsStatic}"))
                 continue;
 
-            var args = string.Join(", ", method.Parameters.Select(p => $"{MapCppTypeToCs(p.Type, ns)} {EscapeKeyword(Sanitize(p.Name))}"));
+            var args = string.Join(
+                ", ",
+                method.Parameters.Select((p, idx) => $"{paramTypes[idx]} {EscapeKeyword(Sanitize(p.Name))}")
+            );
             var returnType = mName == ".ctor" ? "" : (csReturn + " ");
             var methodNameActual = mName == ".ctor" ? Sanitize(typeNameFinal) : mName;
+            var genericSuffix = genericParams.Count == 0 ? "" : "<" + string.Join(", ", genericParams.Select(Sanitize)) + ">";
             var staticMod = method.IsStatic ? "static " : "";
             var body = (mName == ".ctor" || csReturn == "void") ? "{ }" : (csReturn.StartsWith("ref ", StringComparison.Ordinal) ? "=> throw null;" : "=> default;");
+            if (methodNameActual == "get_gameObject" && method.Parameters.Count == 0)
+            {
+                lowerGameObjectReturnType = csReturn;
+                lowerGameObjectStatic = method.IsStatic;
+            }
+            else if (methodNameActual == "get_GameObject" && method.Parameters.Count == 0)
+            {
+                hasUpperGameObject = true;
+            }
+            else if (methodNameActual == "set_text" && method.Parameters.Count == 1)
+            {
+                lowerSetTextParamType = paramTypes[0];
+                lowerSetTextStatic = method.IsStatic;
+                continue;
+            }
+            else if (methodNameActual == "set_Text" && method.Parameters.Count == 1)
+            {
+                hasUpperSetText = true;
+            }
 
             if (isInterface)
             {
                 if (method.IsStatic)
                     continue;
-                writer.WriteLine($"{currentIndent}    {returnType}{methodNameActual}({args});");
+                writer.WriteLine($"{currentIndent}    {returnType}{methodNameActual}{genericSuffix}({args});");
             }
             else
             {
-                writer.WriteLine($"{currentIndent}    public {staticMod}{returnType}{methodNameActual}({args}) {body}");
+                writer.WriteLine($"{currentIndent}    public {staticMod}{returnType}{methodNameActual}{genericSuffix}({args}) {body}");
+            }
+        }
+        if (lowerGameObjectReturnType != null && !hasUpperGameObject)
+        {
+            var staticMod = lowerGameObjectStatic ? "static " : "";
+            if (isInterface)
+            {
+                if (!lowerGameObjectStatic)
+                    writer.WriteLine($"{currentIndent}    {lowerGameObjectReturnType} get_GameObject();");
+            }
+            else
+            {
+                var callTarget = lowerGameObjectStatic ? "get_gameObject()" : "this.get_gameObject()";
+                writer.WriteLine($"{currentIndent}    public {staticMod}{lowerGameObjectReturnType} get_GameObject() => {callTarget};");
+            }
+        }
+        if (lowerSetTextParamType != null && !hasUpperSetText)
+        {
+            var staticMod = lowerSetTextStatic ? "static " : "";
+            if (isInterface)
+            {
+                if (!lowerSetTextStatic)
+                    writer.WriteLine($"{currentIndent}    void set_Text({lowerSetTextParamType} value);");
+            }
+            else
+            {
+                writer.WriteLine($"{currentIndent}    public {staticMod}void set_Text({lowerSetTextParamType} value) {{ }}");
             }
         }
 
@@ -616,7 +773,10 @@ class TypeStubGenerator
             }
 
             var isStruct = _types.TryGetValue((ns, fullCpp), out var pData) && pData.IsValueType;
-            if (!isStruct && ns == "GlobalNamespace" && parentCppName.StartsWith("GameplayModifiers_PlayerSaveDataV1", StringComparison.Ordinal) && (safeGn == "EnergyType" || safeGn == "SongSpeed"))
+            if (!isStruct
+                && ns == "GlobalNamespace"
+                && parentCppName.StartsWith("GameplayModifiers_PlayerSaveDataV1", StringComparison.Ordinal)
+                && (safeGn == "EnabledObstacleType" || safeGn == "EnergyType" || safeGn == "SongSpeed"))
                 isStruct = true;
             writer.WriteLine($"{indent}    public partial {(isStruct ? "struct" : "class")} {safeGn}{gp}");
             writer.WriteLine($"{indent}    {{");
@@ -679,11 +839,14 @@ class TypeStubGenerator
             return "System.Object";
         if (Regex.IsMatch(cppType, @"(?:^|[._])PanicFunction_?$", RegexOptions.CultureInvariant))
             return "System.Object";
-        if (Regex.IsMatch(cppType, @"(?:^|[._])(stateData|touchData|buffer|nameBuffer|idBuffer)(?:[._]|$)", RegexOptions.CultureInvariant))
+        if (Regex.IsMatch(cppType, @"(?:^|[._])(stateData|touchData|primaryTouchData|buffer|nameBuffer|idBuffer)(?:[._]|$)", RegexOptions.CultureInvariant))
             return "System.Object";
 
         while (cppType.EndsWith("*"))
             cppType = cppType.Substring(0, cppType.Length - 1).Trim();
+
+        if (cppType.EndsWith("TMP_TextElement_Legacy", StringComparison.Ordinal))
+            return "System.Object";
 
         if (Regex.IsMatch(cppType, @"(?:^|[._])PanicFunction_?$", RegexOptions.CultureInvariant))
             return "System.Object";
@@ -733,6 +896,7 @@ class TypeStubGenerator
             || cppType.Contains("ServerCertValidationCallback", StringComparison.Ordinal)
             || cppType.Contains("WebConnectionTunnel", StringComparison.Ordinal)
             || cppType.Contains("Dictionary_2_Enumerator", StringComparison.Ordinal)
+            || cppType.Contains("UnityEngine.UIElements.Internal.", StringComparison.Ordinal)
             || cppType.Contains("UnityEngine.UIElements.ActionType", StringComparison.Ordinal)
         )
             return "System.Object";
@@ -740,7 +904,7 @@ class TypeStubGenerator
         if (cppType.StartsWith("cordl_internals.") || cppType.StartsWith("MS.") || cppType.StartsWith("Internal.") || cppType.Contains(".HEU") || cppType.Contains(".HAPI") || cppType.Contains(".Test"))
             return "System.Object";
 
-        if (Regex.IsMatch(cppType, @"^(T|T[A-Z][a-z0-9]*|T[0-9]+)$"))
+        if (Regex.IsMatch(cppType, @"^T[A-Z][A-Za-z0-9]*$") && FindTypeNamespace(cppType, currentNs) == null)
             return "System.Object";
 
         if (cppType == "T" || cppType == "T1" || cppType == "T2" || cppType == "TKey" || cppType == "TValue" || cppType == "TResult")
@@ -883,7 +1047,8 @@ class TypeStubGenerator
             {
                 var nsPart = cppType.Substring(0, lastDot);
                 var typePart = cppType.Substring(lastDot + 1);
-                if (IsGenericPlaceholderToken(typePart))
+                var isGenericLikeTypeParam = IsGenericPlaceholderToken(typePart) || Regex.IsMatch(typePart, @"^T[A-Z][A-Za-z0-9]*$");
+                if (isGenericLikeTypeParam && FindTypeNamespace(typePart, currentNs) == null)
                     return "System.Object";
                 var res = ResolveUnderscoreNested(typePart, nsPart);
                 if (res != null)
@@ -931,7 +1096,9 @@ class TypeStubGenerator
         if (string.IsNullOrWhiteSpace(token))
             return false;
         token = token.Trim();
-        return Regex.IsMatch(token, @"^(T([A-Z0-9_].*)?|P\d+|ARG\d+|[A-Z])$");
+        if (token.Contains("_", StringComparison.Ordinal))
+            return false;
+        return Regex.IsMatch(token, @"^(T|T\d+|TKey|TValue|TResult|P\d+|ARG\d+|[A-Z])$");
     }
 
     private bool IsNamespaceQualifiedTypePath(string path, string currentNs)
@@ -1417,6 +1584,7 @@ class MethodInfo
     public string ReturnType { get; set; } = "";
     public string Name { get; set; } = "";
     public bool IsStatic { get; set; }
+    public List<string> GenericParameters { get; set; } = new();
     public List<ParameterInfo> Parameters { get; set; } = new();
 }
 

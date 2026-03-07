@@ -6,6 +6,7 @@ todo
 
 - make sure TypeGenerator and Transpiler both work for the gen types
 - change SampleMod to use the new TypeGenerator types
+- make everything (Transpiler, TypeGenerator) not have less hardcoded stuff
 
 what is working?
 

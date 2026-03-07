@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="SampleMod/SampleMod.csproj" />
+  <Project Path="Transpiler/Transpiler.csproj" />
+  <Project Path="TypeGenerator/TypeGenerator.csproj" />
+</Solution>

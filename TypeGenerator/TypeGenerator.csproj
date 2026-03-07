@@ -8,4 +8,8 @@
     <ItemGroup>
         <Folder Include="output\" />
     </ItemGroup>
+    <ItemGroup>
+        <Compile Remove="Output\GeneratedTypes.cs" />
+        <Compile Remove="output\GeneratedTypes.cs" />
+    </ItemGroup>
 </Project>

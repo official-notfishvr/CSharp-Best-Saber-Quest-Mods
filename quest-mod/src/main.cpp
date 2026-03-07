@@ -4,8 +4,8 @@
 #include "GlobalNamespace/StandardLevelDetailViewController.hpp"
 #include "GlobalNamespace/StandardLevelDetailView.hpp"
 #include "UnityEngine/UI/Button.hpp"
-#include "UnityEngine/GameObject.hpp"
 #include "HMUI/CurvedTextMeshPro.hpp"
+#include "UnityEngine/GameObject.hpp"
 
 static modloader::ModInfo modInfo{"com.example.testmod", "1.0.0", 0};
 
@@ -22,9 +22,9 @@ MAKE_HOOK_MATCH(
 
     OnLevelScreenActivateHook(self, firstActivation, addedToHierarchy, screenSystemEnabling);
     if (Enabled) {
-        GlobalNamespace::StandardLevelDetailView* detailView = self->_standardLevelDetailView;
-        UnityEngine::UI::Button* actionButton = detailView->actionButton;
-        UnityEngine::GameObject* gameObject = actionButton->get_gameObject();
+        auto detailView = self->_standardLevelDetailView;
+        auto actionButton = detailView->actionButton;
+        auto gameObject = actionButton->get_gameObject();
         HMUI::CurvedTextMeshPro* buttonText = gameObject->GetComponentInChildren<HMUI::CurvedTextMeshPro*>();
         buttonText->set_text(ButtonText);
     }
