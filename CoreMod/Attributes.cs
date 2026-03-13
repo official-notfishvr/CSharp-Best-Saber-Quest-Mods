@@ -3,12 +3,27 @@ namespace CoreMod;
 [AttributeUsage(AttributeTargets.Method)]
 public sealed class HookAttribute : Attribute
 {
-    public string MethodName { get; }
+    public string? MethodName { get; set; }
+    public Type? TargetType { get; set; }
     public string? ClassName { get; set; }
+    public bool IsConstructor { get; set; }
+
+    public HookAttribute() { }
 
     public HookAttribute(string methodName)
     {
         MethodName = methodName;
+    }
+
+    public HookAttribute(Type targetType, string methodName)
+    {
+        TargetType = targetType;
+        MethodName = methodName;
+    }
+
+    public HookAttribute(Type targetType)
+    {
+        TargetType = targetType;
     }
 }
 

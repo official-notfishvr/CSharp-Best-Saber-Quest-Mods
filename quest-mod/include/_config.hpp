@@ -5,8 +5,5 @@
 
 #include "beatsaber-hook/shared/utils/il2cpp-utils.hpp"
 
-#define MOD_ID "com.example.testmod"
-#define VERSION "1.0.0"
-
 static bool Enabled = true;
 static Il2CppString* ButtonText = il2cpp_utils::newcsstr("Skill Issue");

@@ -24,7 +24,7 @@ MAKE_HOOK_MATCH(
         auto detailView = self->_standardLevelDetailView;
         auto actionButton = detailView->_actionButton;
         auto gameObject = actionButton->get_gameObject();
-        HMUI::CurvedTextMeshPro* buttonText = gameObject->GetComponentInChildren<HMUI::CurvedTextMeshPro*>();
+        auto buttonText = gameObject->GetComponentInChildren<HMUI::CurvedTextMeshPro*>();
         buttonText->set_text(ButtonText);
     }
 }

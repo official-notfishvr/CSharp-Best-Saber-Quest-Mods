@@ -2,12 +2,6 @@
 
 a POC for making beat saber quest mods in C#
 
-todo
-
-- validate more mods than `SampleMod`
-- expand control-flow reconstruction past simple forward-branch `if` patterns
-- regenerate committed type outputs after the next full `TypeGenerator` run
-
 what is working?
 
 - `CoreMod` contains the mod-facing attributes
@@ -17,7 +11,7 @@ what is working?
 - `Transpiler` works for `SampleMod`
 - `TypeGenerator` can emit `GeneratedTypes.cs` plus `GeneratedTypes.metadata.json`
 
-## Credits
+## Credits (Quest C++ modding)
 
 - [zoller27osu](https://github.com/zoller27osu), [Sc2ad](https://github.com/Sc2ad) and [jakibaki](https://github.com/jakibaki) - [beatsaber-hook](https://github.com/sc2ad/beatsaber-hook)
 - [raftario](https://github.com/raftario)

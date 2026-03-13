@@ -43,6 +43,8 @@ internal sealed class CecilTranspiler
 
         foreach (var type in _module.Types)
             ProcessType(type);
+
+        AssignConfigIdentifiers();
     }
 
     public void GenerateOutput(string outputDirectory)
@@ -96,6 +98,8 @@ internal sealed class CecilTranspiler
                 new ConfigValueInfo
                 {
                     Name = property.Name,
+                    CppIdentifier = property.Name,
+                    DeclaringTypeFullName = type.FullName,
                     Type = property.PropertyType,
                     Description = ReadNamedAttributeString(configAttribute, "Description") ?? "",
                     DefaultValueCpp = defaultValueCpp,
@@ -115,6 +119,8 @@ internal sealed class CecilTranspiler
                 new ConfigValueInfo
                 {
                     Name = field.Name,
+                    CppIdentifier = field.Name,
+                    DeclaringTypeFullName = type.FullName,
                     Type = field.FieldType,
                     Description = ReadNamedAttributeString(configAttribute, "Description") ?? "",
                     DefaultValueCpp = defaultValueCpp,
@@ -138,10 +144,16 @@ internal sealed class CecilTranspiler
                 throw new InvalidOperationException($"Hook methods must have at least the self parameter: {method.FullName}");
 
             var targetType = method.Parameters[0].ParameterType;
-            var targetMethod = hookAttribute.ConstructorArguments.Count > 0 ? hookAttribute.ConstructorArguments[0].Value?.ToString() ?? method.Name : method.Name;
+            var targetMethod = ReadHookMethodName(hookAttribute) ?? method.Name;
+            var isConstructor = ReadNamedAttributeBoolean(hookAttribute, "IsConstructor") || string.Equals(targetMethod, ".ctor", StringComparison.Ordinal);
+            if (isConstructor)
+                targetMethod = ".ctor";
+
+            if (ReadHookTargetType(hookAttribute) is { } explicitTargetType)
+                targetType = explicitTargetType;
 
             var explicitClassName = ReadNamedAttributeString(hookAttribute, "ClassName");
-            if (!string.IsNullOrWhiteSpace(explicitClassName) && !string.Equals(targetType.Name, explicitClassName, StringComparison.Ordinal))
+            if (!string.IsNullOrWhiteSpace(explicitClassName) && ReadHookTargetType(hookAttribute) == null && !string.Equals(targetType.Name, explicitClassName, StringComparison.Ordinal))
             {
                 targetType = TryResolveTypeByName(explicitClassName!, targetType);
             }
@@ -153,6 +165,7 @@ internal sealed class CecilTranspiler
                     TargetMethod = targetMethod,
                     TargetType = targetType,
                     Method = method,
+                    IsConstructor = isConstructor,
                 }
             );
         }
@@ -235,15 +248,12 @@ internal sealed class CecilTranspiler
         writer.WriteLine();
         writer.WriteLine("#include \"beatsaber-hook/shared/utils/il2cpp-utils.hpp\"");
         writer.WriteLine();
-        writer.WriteLine($"#define MOD_ID \"{_modInfo.Id}\"");
-        writer.WriteLine($"#define VERSION \"{_modInfo.Version}\"");
-        writer.WriteLine();
 
         foreach (var config in _configValues)
         {
             var cppType = _typeSystem.MapType(config.Type);
             var defaultValue = config.DefaultValueCpp ?? _typeSystem.GetDefaultValue(config.Type);
-            writer.WriteLine($"static {cppType} {config.Name} = {defaultValue};");
+            writer.WriteLine($"static {cppType} {config.CppIdentifier} = {defaultValue};");
         }
 
         WriteOutputFile(outputDirectory, Path.Combine("include", "_config.hpp"), writer.ToString());
@@ -333,7 +343,7 @@ internal sealed class CecilTranspiler
 
         writer.WriteLine("MAKE_HOOK_MATCH(");
         writer.WriteLine($"    {hook.HookName},");
-        writer.WriteLine($"    &{_typeSystem.MapNamespace(hook.TargetType.Namespace)}::{_typeSystem.ComposeTypeName(hook.TargetType)}::{hook.TargetMethod},");
+        writer.WriteLine($"    &{_typeSystem.MapNamespace(hook.TargetType.Namespace)}::{_typeSystem.ComposeTypeName(hook.TargetType)}::{MapTargetMethodName(hook)},");
         writer.WriteLine($"    {returnType},");
         writer.WriteLine($"    {string.Join(", ", parameters)}) {{");
 
@@ -379,6 +389,101 @@ internal sealed class CecilTranspiler
         }
 
         return null;
+    }
+
+    private static bool ReadNamedAttributeBoolean(CustomAttribute attribute, string name)
+    {
+        foreach (var property in attribute.Properties)
+        {
+            if (string.Equals(property.Name, name, StringComparison.Ordinal) && property.Argument.Value is bool value)
+                return value;
+        }
+
+        foreach (var field in attribute.Fields)
+        {
+            if (string.Equals(field.Name, name, StringComparison.Ordinal) && field.Argument.Value is bool value)
+                return value;
+        }
+
+        return false;
+    }
+
+    private static string? ReadHookMethodName(CustomAttribute attribute)
+    {
+        foreach (var argument in attribute.ConstructorArguments)
+        {
+            if (argument.Type.FullName == "System.Type")
+                continue;
+
+            if (argument.Value is string methodName)
+                return methodName;
+        }
+
+        return ReadNamedAttributeString(attribute, "MethodName");
+    }
+
+    private TypeReference? ReadHookTargetType(CustomAttribute attribute)
+    {
+        foreach (var argument in attribute.ConstructorArguments)
+        {
+            if (argument.Type.FullName == "System.Type")
+                return NormalizeHookTargetType(argument.Value);
+        }
+
+        foreach (var property in attribute.Properties)
+        {
+            if (string.Equals(property.Name, "TargetType", StringComparison.Ordinal))
+                return NormalizeHookTargetType(property.Argument.Value);
+        }
+
+        foreach (var field in attribute.Fields)
+        {
+            if (string.Equals(field.Name, "TargetType", StringComparison.Ordinal))
+                return NormalizeHookTargetType(field.Argument.Value);
+        }
+
+        return null;
+    }
+
+    private TypeReference? NormalizeHookTargetType(object? value)
+    {
+        return value switch
+        {
+            TypeReference typeReference => _module?.ImportReference(typeReference) ?? typeReference,
+            _ => null,
+        };
+    }
+
+    private static string MapTargetMethodName(HookInfo hook)
+    {
+        return hook.IsConstructor ? "_ctor" : hook.TargetMethod;
+    }
+
+    private void AssignConfigIdentifiers()
+    {
+        foreach (var configGroup in _configValues.GroupBy(config => config.Name, StringComparer.Ordinal))
+        {
+            if (configGroup.Count() == 1)
+                continue;
+
+            foreach (var config in configGroup)
+                config.CppIdentifier = BuildUniqueConfigIdentifier(config);
+        }
+    }
+
+    private static string BuildUniqueConfigIdentifier(ConfigValueInfo config)
+    {
+        return $"{SanitizeIdentifier(config.DeclaringTypeFullName)}_{CppName.Sanitize(config.Name)}";
+    }
+
+    private static string SanitizeIdentifier(string value)
+    {
+        var chars = value.Select(ch => char.IsLetterOrDigit(ch) ? ch : '_').ToArray();
+        var sanitized = new string(chars);
+        if (string.IsNullOrWhiteSpace(sanitized))
+            return "config";
+
+        return char.IsDigit(sanitized[0]) ? $"_{sanitized}" : sanitized;
     }
 
     private static string? TryGetAutoPropertyName(string fieldName)

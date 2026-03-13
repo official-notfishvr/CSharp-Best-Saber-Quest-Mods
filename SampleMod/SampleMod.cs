@@ -13,7 +13,7 @@ public static class TestMod
     [Config(Description = "Button text to display")]
     public static string ButtonText { get; set; } = "Skill Issue";
 
-    [Hook("DidActivate", ClassName = "StandardLevelDetailViewController")]
+    [Hook(typeof(StandardLevelDetailViewController), nameof(StandardLevelDetailViewController.DidActivate))]
     public static void OnLevelScreenActivate(StandardLevelDetailViewController self, bool firstActivation, bool addedToHierarchy, bool screenSystemEnabling)
     {
         OnLevelScreenActivate(self, firstActivation, addedToHierarchy, screenSystemEnabling);

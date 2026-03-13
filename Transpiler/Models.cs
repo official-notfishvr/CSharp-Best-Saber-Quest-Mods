@@ -18,6 +18,8 @@ internal sealed class ModInfo
 internal sealed class ConfigValueInfo
 {
     public required string Name { get; init; }
+    public required string CppIdentifier { get; set; }
+    public required string DeclaringTypeFullName { get; init; }
     public required TypeReference Type { get; init; }
     public string Description { get; init; } = "";
     public string? DefaultValueCpp { get; init; }
@@ -29,6 +31,7 @@ internal sealed class HookInfo
     public required string TargetMethod { get; init; }
     public required TypeReference TargetType { get; init; }
     public required MethodDefinition Method { get; init; }
+    public bool IsConstructor { get; init; }
 }
 
 internal sealed class CppValue

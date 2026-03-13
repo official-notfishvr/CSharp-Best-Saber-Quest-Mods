@@ -10,7 +10,10 @@ namespace Transpiler;
 
 internal sealed class HookBodyGenerator
 {
+    private readonly record struct TranslationSnapshot(CppValue[] StackValues, int LineCount, int[] DeclaredLocals);
+
     private readonly Dictionary<int, string> _localNames;
+    private readonly Dictionary<int, string> _parameterNames;
     private readonly Dictionary<Instruction, int> _instructionIndices;
     private readonly Dictionary<string, ConfigValueInfo> _configByGetter;
     private readonly Dictionary<string, ConfigValueInfo> _configBySetter;
@@ -30,10 +33,11 @@ internal sealed class HookBodyGenerator
         _method = hook.Method;
         _instructions = _method.Body != null ? _method.Body.Instructions : Array.Empty<Instruction>();
         _localNames = BuildLocalNameMap(_method);
+        _parameterNames = _method.Parameters.ToDictionary(parameter => parameter.Index, parameter => CppName.Sanitize(parameter.Name));
         _instructionIndices = _instructions.Select((instruction, index) => (instruction, index)).ToDictionary(item => item.instruction, item => item.index);
-        _configByGetter = configValues.ToDictionary(config => $"get_{config.Name}", config => config, StringComparer.Ordinal);
-        _configBySetter = configValues.ToDictionary(config => $"set_{config.Name}", config => config, StringComparer.Ordinal);
-        _configByField = configValues.ToDictionary(config => config.Name, config => config, StringComparer.Ordinal);
+        _configByGetter = configValues.ToDictionary(config => BuildConfigAccessorKey(config.DeclaringTypeFullName, $"get_{config.Name}"), config => config, StringComparer.Ordinal);
+        _configBySetter = configValues.ToDictionary(config => BuildConfigAccessorKey(config.DeclaringTypeFullName, $"set_{config.Name}"), config => config, StringComparer.Ordinal);
+        _configByField = configValues.ToDictionary(config => BuildConfigAccessorKey(config.DeclaringTypeFullName, config.Name), config => config, StringComparer.Ordinal);
     }
 
     public HookInfo Hook { get; }
@@ -73,6 +77,9 @@ internal sealed class HookBodyGenerator
             }
 
             EmitInstruction(instruction, indentLevel);
+
+            if (instruction.OpCode.Code is Code.Br or Code.Br_S or Code.Leave or Code.Leave_S && TryBuildReturnFromBranchTarget((Instruction)instruction.Operand, out _))
+                break;
         }
     }
 
@@ -93,14 +100,13 @@ internal sealed class HookBodyGenerator
         if (branch.OpCode.Code is not (Code.Brfalse or Code.Brfalse_S or Code.Brtrue or Code.Brtrue_S))
             return false;
 
-        var targetInstruction = (Instruction)branch.Operand;
-        if (!_instructionIndices.TryGetValue(targetInstruction, out var targetIndex) || targetIndex <= index + 2 || targetIndex > endIndex)
+        if (!TryGetBranchTargetIndex(branch, index + 2, endIndex, out var targetIndex))
             return false;
 
-        var condition = Pop().Code;
-        EmitStructuredIf(condition, branch.OpCode.Code, index + 3, targetIndex, indentLevel);
-        consumedUntil = targetIndex;
-        return true;
+        var bodyStartIndex = index + 3;
+        var positiveCondition = branch.OpCode.Code is Code.Brfalse or Code.Brfalse_S ? Pop().Code : NegateCondition(Pop().Code);
+        positiveCondition = ExtendConditionChain(positiveCondition, ref bodyStartIndex, targetIndex, endIndex);
+        return TryEmitStructuredConditionalBlock(positiveCondition, bodyStartIndex, targetIndex, endIndex, indentLevel, out consumedUntil);
     }
 
     private bool TryEmitStructuredIf(Instruction instruction, int index, int endIndex, int indentLevel, out int consumedUntil)
@@ -113,14 +119,13 @@ internal sealed class HookBodyGenerator
             case Code.Brtrue:
             case Code.Brtrue_S:
             {
-                var targetInstruction = (Instruction)instruction.Operand;
-                if (!_instructionIndices.TryGetValue(targetInstruction, out var targetIndex) || targetIndex <= index || targetIndex > endIndex)
+                if (!TryGetBranchTargetIndex(instruction, index, endIndex, out var targetIndex))
                     return false;
 
-                var condition = Pop().Code;
-                EmitStructuredIf(condition, instruction.OpCode.Code, index + 1, targetIndex, indentLevel);
-                consumedUntil = targetIndex;
-                return true;
+                var bodyStartIndex = index + 1;
+                var positiveCondition = instruction.OpCode.Code is Code.Brfalse or Code.Brfalse_S ? Pop().Code : NegateCondition(Pop().Code);
+                positiveCondition = ExtendConditionChain(positiveCondition, ref bodyStartIndex, targetIndex, endIndex);
+                return TryEmitStructuredConditionalBlock(positiveCondition, bodyStartIndex, targetIndex, endIndex, indentLevel, out consumedUntil);
             }
             case Code.Beq:
             case Code.Beq_S:
@@ -143,29 +148,49 @@ internal sealed class HookBodyGenerator
             case Code.Blt_Un:
             case Code.Blt_Un_S:
             {
-                var targetInstruction = (Instruction)instruction.Operand;
-                if (!_instructionIndices.TryGetValue(targetInstruction, out var targetIndex) || targetIndex <= index || targetIndex > endIndex)
+                if (!TryGetBranchTargetIndex(instruction, index, endIndex, out var targetIndex))
                     return false;
 
                 var right = Pop();
                 var left = Pop();
-                var condition = BuildBodyConditionForCompareBranch(instruction.OpCode.Code, left.Code, right.Code);
-                EmitStructuredIf(condition, Code.Brfalse, index + 1, targetIndex, indentLevel);
-                consumedUntil = targetIndex;
-                return true;
+                var bodyStartIndex = index + 1;
+                var positiveCondition = BuildBodyConditionForCompareBranch(instruction.OpCode.Code, left.Code, right.Code);
+                positiveCondition = ExtendConditionChain(positiveCondition, ref bodyStartIndex, targetIndex, endIndex);
+                return TryEmitStructuredConditionalBlock(positiveCondition, bodyStartIndex, targetIndex, endIndex, indentLevel, out consumedUntil);
             }
             default:
                 return false;
         }
     }
 
-    private void EmitStructuredIf(string condition, Code branchCode, int bodyStartIndex, int bodyEndIndex, int indentLevel)
+    private bool TryEmitStructuredConditionalBlock(string positiveCondition, int bodyStartIndex, int bodyEndIndex, int endIndex, int indentLevel, out int consumedUntil)
     {
-        var positiveCondition = branchCode is Code.Brfalse or Code.Brfalse_S ? condition : $"!({condition})";
+        if (TryGetElseBranch(bodyStartIndex, bodyEndIndex, endIndex, out var thenEndIndex, out var elseEndIndex))
+        {
+            if (IsEffectivelyEmptyRange(bodyStartIndex, thenEndIndex))
+            {
+                AppendLine(indentLevel, $"if ({NegateCondition(positiveCondition)}) {{");
+                GenerateRange(bodyEndIndex, elseEndIndex, indentLevel + 1);
+                AppendLine(indentLevel, "}");
+                consumedUntil = elseEndIndex;
+                return true;
+            }
+
+            AppendLine(indentLevel, $"if ({positiveCondition}) {{");
+            GenerateRange(bodyStartIndex, thenEndIndex, indentLevel + 1);
+            AppendLine(indentLevel, "}");
+            AppendLine(indentLevel, "else {");
+            GenerateRange(bodyEndIndex, elseEndIndex, indentLevel + 1);
+            AppendLine(indentLevel, "}");
+            consumedUntil = elseEndIndex;
+            return true;
+        }
 
         AppendLine(indentLevel, $"if ({positiveCondition}) {{");
         GenerateRange(bodyStartIndex, bodyEndIndex, indentLevel + 1);
         AppendLine(indentLevel, "}");
+        consumedUntil = bodyEndIndex;
+        return true;
     }
 
     private void EmitInstruction(Instruction instruction, int indentLevel)
@@ -190,6 +215,10 @@ internal sealed class HookBodyGenerator
             case Code.Ldarg_S:
                 PushArgument(((ParameterDefinition)instruction.Operand).Index);
                 return;
+            case Code.Ldarga:
+            case Code.Ldarga_S:
+                PushArgumentAddress(((ParameterDefinition)instruction.Operand).Index);
+                return;
             case Code.Ldloc_0:
             case Code.Ldloc_1:
             case Code.Ldloc_2:
@@ -200,6 +229,10 @@ internal sealed class HookBodyGenerator
             case Code.Ldloc_S:
                 PushLocal(((VariableDefinition)instruction.Operand).Index);
                 return;
+            case Code.Ldloca:
+            case Code.Ldloca_S:
+                PushLocalAddress(((VariableDefinition)instruction.Operand).Index);
+                return;
             case Code.Stloc_0:
             case Code.Stloc_1:
             case Code.Stloc_2:
@@ -209,6 +242,10 @@ internal sealed class HookBodyGenerator
             case Code.Stloc:
             case Code.Stloc_S:
                 StoreLocal(((VariableDefinition)instruction.Operand).Index, indentLevel);
+                return;
+            case Code.Starg:
+            case Code.Starg_S:
+                StoreArgument(((ParameterDefinition)instruction.Operand).Index, indentLevel);
                 return;
             case Code.Ldc_I4_M1:
                 _stack.Push(new CppValue { Code = "-1", Type = _method.Module.TypeSystem.Int32 });
@@ -244,10 +281,16 @@ internal sealed class HookBodyGenerator
                 _stack.Push(new CppValue { Code = "nullptr", Type = _method.Module.TypeSystem.Object });
                 return;
             case Code.Ldfld:
-                LoadField((FieldReference)instruction.Operand, isStatic: false);
+                LoadField((FieldReference)instruction.Operand, isStatic: false, asAddress: false);
                 return;
             case Code.Ldsfld:
-                LoadField((FieldReference)instruction.Operand, isStatic: true);
+                LoadField((FieldReference)instruction.Operand, isStatic: true, asAddress: false);
+                return;
+            case Code.Ldflda:
+                LoadField((FieldReference)instruction.Operand, isStatic: false, asAddress: true);
+                return;
+            case Code.Ldsflda:
+                LoadField((FieldReference)instruction.Operand, isStatic: true, asAddress: true);
                 return;
             case Code.Stfld:
                 StoreField((FieldReference)instruction.Operand, isStatic: false, indentLevel);
@@ -259,10 +302,21 @@ internal sealed class HookBodyGenerator
             case Code.Callvirt:
                 EmitCall((MethodReference)instruction.Operand, indentLevel);
                 return;
+            case Code.Newobj:
+                EmitNewObject((MethodReference)instruction.Operand);
+                return;
             case Code.Br:
             case Code.Br_S:
+            case Code.Leave:
+            case Code.Leave_S:
             {
                 var target = (Instruction)instruction.Operand;
+                if (TryBuildReturnFromBranchTarget(target, out var returnExpression))
+                {
+                    AppendLine(indentLevel, $"return {returnExpression};");
+                    return;
+                }
+
                 if (_instructionIndices.TryGetValue(target, out var targetIndex) && targetIndex == _instructions.Count - 1 && _instructions[targetIndex].OpCode.Code == Code.Ret)
                     return;
                 throw new NotSupportedException($"Unsupported non-structured branch in {_method.FullName}");
@@ -317,19 +371,37 @@ internal sealed class HookBodyGenerator
                 EmitBinary("%");
                 return;
             case Code.And:
-                EmitBinary("&");
+                EmitBinary(IsBooleanBinary() ? "&&" : "&");
                 return;
             case Code.Or:
-                EmitBinary("|");
+                EmitBinary(IsBooleanBinary() ? "||" : "|");
                 return;
             case Code.Xor:
                 EmitBinary("^");
+                return;
+            case Code.Shl:
+                EmitBinary("<<");
+                return;
+            case Code.Shr:
+            case Code.Shr_Un:
+                EmitBinary(">>");
                 return;
             case Code.Neg:
                 EmitUnary("-");
                 return;
             case Code.Not:
                 EmitUnary("~");
+                return;
+            case Code.Castclass:
+            case Code.Isinst:
+            case Code.Unbox_Any:
+                EmitCast((TypeReference)instruction.Operand);
+                return;
+            case Code.Box:
+                EmitBox((TypeReference)instruction.Operand);
+                return;
+            case Code.Initobj:
+                EmitInitObject((TypeReference)instruction.Operand, indentLevel);
                 return;
             case Code.Conv_I1:
             case Code.Conv_I2:
@@ -352,7 +424,14 @@ internal sealed class HookBodyGenerator
     {
         var parameter = _method.Parameters[parameterIndex];
         RequiredInclude(parameter.ParameterType);
-        _stack.Push(new CppValue { Code = CppName.Sanitize(parameter.Name), Type = parameter.ParameterType });
+        _stack.Push(new CppValue { Code = GetArgumentName(parameterIndex), Type = parameter.ParameterType });
+    }
+
+    private void PushArgumentAddress(int parameterIndex)
+    {
+        var parameter = _method.Parameters[parameterIndex];
+        RequiredInclude(parameter.ParameterType);
+        _stack.Push(new CppValue { Code = GetArgumentName(parameterIndex), Type = parameter.ParameterType, PreferAutoDeclaration = true });
     }
 
     private void PushLocal(int index)
@@ -360,6 +439,13 @@ internal sealed class HookBodyGenerator
         var variable = _method.Body!.Variables[index];
         RequiredInclude(variable.VariableType);
         _stack.Push(new CppValue { Code = GetLocalName(index), Type = variable.VariableType });
+    }
+
+    private void PushLocalAddress(int index)
+    {
+        var variable = _method.Body!.Variables[index];
+        RequiredInclude(variable.VariableType);
+        _stack.Push(new CppValue { Code = GetLocalName(index), Type = variable.VariableType, PreferAutoDeclaration = true });
     }
 
     private void StoreLocal(int index, int indentLevel)
@@ -378,14 +464,19 @@ internal sealed class HookBodyGenerator
         AppendLine(indentLevel, $"{name} = {value.Code};");
     }
 
-    private void LoadField(FieldReference field, bool isStatic)
+    private void StoreArgument(int index, int indentLevel)
+    {
+        AppendLine(indentLevel, $"{GetArgumentName(index)} = {Pop().Code};");
+    }
+
+    private void LoadField(FieldReference field, bool isStatic, bool asAddress)
     {
         RequiredInclude(field.FieldType);
         RequiredInclude(field.DeclaringType);
 
-        if (isStatic && _configByField.TryGetValue(field.Name, out var config))
+        if (isStatic && _configByField.TryGetValue(BuildConfigAccessorKey(field.DeclaringType.FullName, field.Name), out var config))
         {
-            _stack.Push(new CppValue { Code = config.Name, Type = config.Type });
+            _stack.Push(new CppValue { Code = config.CppIdentifier, Type = config.Type });
             return;
         }
 
@@ -400,9 +491,9 @@ internal sealed class HookBodyGenerator
         _stack.Push(
             new CppValue
             {
-                Code = $"{target.Code}->{field.Name}",
+                Code = $"{target.Code}{GetMemberAccessOperator(target.Type)}{field.Name}",
                 Type = field.FieldType,
-                PreferAutoDeclaration = true,
+                PreferAutoDeclaration = !asAddress,
             }
         );
     }
@@ -411,9 +502,9 @@ internal sealed class HookBodyGenerator
     {
         var value = Pop();
 
-        if (isStatic && _configByField.TryGetValue(field.Name, out var config))
+        if (isStatic && _configByField.TryGetValue(BuildConfigAccessorKey(field.DeclaringType.FullName, field.Name), out var config))
         {
-            AppendLine(indentLevel, $"{config.Name} = {value.Code};");
+            AppendLine(indentLevel, $"{config.CppIdentifier} = {value.Code};");
             return;
         }
 
@@ -425,7 +516,7 @@ internal sealed class HookBodyGenerator
         }
 
         var target = Pop();
-        AppendLine(indentLevel, $"{target.Code}->{field.Name} = {value.Code};");
+        AppendLine(indentLevel, $"{target.Code}{GetMemberAccessOperator(target.Type)}{field.Name} = {value.Code};");
     }
 
     private void EmitCall(MethodReference method, int indentLevel)
@@ -445,11 +536,11 @@ internal sealed class HookBodyGenerator
         {
             if (method.Name.StartsWith("get_", StringComparison.Ordinal))
             {
-                _stack.Push(new CppValue { Code = configAccessor.Name, Type = configAccessor.Type });
+                _stack.Push(new CppValue { Code = configAccessor.CppIdentifier, Type = configAccessor.Type });
                 return;
             }
 
-            AppendLine(indentLevel, $"{configAccessor.Name} = {args[0].Code};");
+            AppendLine(indentLevel, $"{configAccessor.CppIdentifier} = {args[0].Code};");
             return;
         }
 
@@ -493,12 +584,23 @@ internal sealed class HookBodyGenerator
     private CppValue BuildCallValue(MethodReference method, CppValue? instance, IReadOnlyList<CppValue> args)
     {
         var argumentList = string.Join(", ", args.Select(arg => arg.Code));
+        var declaringType = $"{_typeSystem.MapNamespace(method.DeclaringType.Namespace)}::{_typeSystem.ComposeTypeName(method.DeclaringType)}";
+
+        if (method.Name == ".ctor" && instance != null)
+        {
+            return new CppValue
+            {
+                Code = $"{instance.Code}{GetMemberAccessOperator(instance.Type)}_ctor({argumentList})",
+                Type = method.ReturnType,
+                HasSideEffects = true,
+            };
+        }
 
         if (method.Name.StartsWith("get_", StringComparison.Ordinal) && TryGetPropertyAccessorName(method, out var propertyName) && instance != null)
         {
             return new CppValue
             {
-                Code = $"{instance.Code}->{propertyName}",
+                Code = $"{instance.Code}{GetMemberAccessOperator(instance.Type)}{propertyName}",
                 Type = method.ReturnType,
                 PreferAutoDeclaration = true,
             };
@@ -508,7 +610,13 @@ internal sealed class HookBodyGenerator
         {
             var typeArgument = genericMethod.GenericArguments[0];
             RequiredInclude(typeArgument);
-            return new CppValue { Code = $"{instance.Code}->{method.Name}<{_typeSystem.MapType(typeArgument)}>({argumentList})", Type = method.ReturnType };
+            return new CppValue
+            {
+                Code = $"{instance.Code}{GetMemberAccessOperator(instance.Type)}{method.Name}<{_typeSystem.MapType(typeArgument)}>({argumentList})",
+                Type = method.ReturnType,
+                PreferAutoDeclaration = true,
+                HasSideEffects = true,
+            };
         }
 
         if (method.Name.StartsWith("get_", StringComparison.Ordinal) || method.Name.StartsWith("set_", StringComparison.Ordinal))
@@ -519,7 +627,7 @@ internal sealed class HookBodyGenerator
                 {
                     return new CppValue
                     {
-                        Code = $"{instance.Code}->{metadataPropertyName}",
+                        Code = instance != null ? $"{instance.Code}{GetMemberAccessOperator(instance.Type)}{metadataPropertyName}" : $"{declaringType}::{metadataPropertyName}",
                         Type = method.ReturnType,
                         PreferAutoDeclaration = true,
                     };
@@ -527,7 +635,7 @@ internal sealed class HookBodyGenerator
 
                 return new CppValue
                 {
-                    Code = $"{instance.Code}->{metadataPropertyName} = {argumentList}",
+                    Code = instance != null ? $"{instance.Code}{GetMemberAccessOperator(instance.Type)}{metadataPropertyName} = {argumentList}" : $"{declaringType}::{metadataPropertyName} = {argumentList}",
                     Type = method.ReturnType,
                     HasSideEffects = true,
                 };
@@ -536,7 +644,7 @@ internal sealed class HookBodyGenerator
             var accessorName = NormalizeAccessorName(method.Name);
             return new CppValue
             {
-                Code = instance != null ? $"{instance.Code}->{accessorName}({argumentList})" : $"{accessorName}({argumentList})",
+                Code = instance != null ? $"{instance.Code}{GetMemberAccessOperator(instance.Type)}{accessorName}({argumentList})" : $"{declaringType}::{accessorName}({argumentList})",
                 Type = method.ReturnType,
                 PreferAutoDeclaration = method.Name.StartsWith("get_", StringComparison.Ordinal),
                 HasSideEffects = true,
@@ -547,14 +655,13 @@ internal sealed class HookBodyGenerator
         {
             return new CppValue
             {
-                Code = $"{instance.Code}->{method.Name}({argumentList})",
+                Code = $"{instance.Code}{GetMemberAccessOperator(instance.Type)}{method.Name}({argumentList})",
                 Type = method.ReturnType,
                 PreferAutoDeclaration = true,
                 HasSideEffects = true,
             };
         }
 
-        var declaringType = $"{_typeSystem.MapNamespace(method.DeclaringType.Namespace)}::{_typeSystem.ComposeTypeName(method.DeclaringType)}";
         return new CppValue
         {
             Code = $"{declaringType}::{method.Name}({argumentList})",
@@ -575,10 +682,11 @@ internal sealed class HookBodyGenerator
 
     private bool IsConfigAccessor(MethodReference method, out ConfigValueInfo config)
     {
-        if (_configByGetter.TryGetValue(method.Name, out config!))
+        var declaringTypeFullName = method.DeclaringType.FullName;
+        if (_configByGetter.TryGetValue(BuildConfigAccessorKey(declaringTypeFullName, method.Name), out config!))
             return true;
 
-        return _configBySetter.TryGetValue(method.Name, out config!);
+        return _configBySetter.TryGetValue(BuildConfigAccessorKey(declaringTypeFullName, method.Name), out config!);
     }
 
     private bool TryGetPropertyAccessorName(MethodReference method, out string propertyName)
@@ -627,6 +735,15 @@ internal sealed class HookBodyGenerator
         _stack.Push(new CppValue { Code = $"({left.Code} {op} {right.Code})", Type = left.Type ?? right.Type });
     }
 
+    private bool IsBooleanBinary()
+    {
+        if (_stack.Count < 2)
+            return false;
+
+        var values = _stack.ToArray();
+        return IsBooleanType(values[0].Type) && IsBooleanType(values[1].Type);
+    }
+
     private void EmitComparison(string op)
     {
         var right = Pop();
@@ -660,6 +777,36 @@ internal sealed class HookBodyGenerator
         _stack.Push(new CppValue { Code = $"static_cast<{targetType}>({operand.Code})", Type = operand.Type });
     }
 
+    private void EmitNewObject(MethodReference constructor)
+    {
+        var args = new List<CppValue>(constructor.Parameters.Count);
+        for (var i = 0; i < constructor.Parameters.Count; i++)
+            args.Insert(0, Pop());
+
+        RequiredInclude(constructor.DeclaringType);
+        _stack.Push(BuildNewObjectValue(constructor, args));
+    }
+
+    private void EmitCast(TypeReference targetType)
+    {
+        var operand = Pop();
+        RequiredInclude(targetType);
+        _stack.Push(new CppValue { Code = BuildCastExpression(targetType, operand.Code), Type = targetType, PreferAutoDeclaration = true });
+    }
+
+    private void EmitBox(TypeReference sourceType)
+    {
+        var operand = Pop();
+        RequiredInclude(sourceType);
+        _stack.Push(new CppValue { Code = $"reinterpret_cast<Il2CppObject*>({operand.Code})", Type = _method.Module.TypeSystem.Object, PreferAutoDeclaration = true });
+    }
+
+    private void EmitInitObject(TypeReference targetType, int indentLevel)
+    {
+        RequiredInclude(targetType);
+        AppendLine(indentLevel, $"{Pop().Code} = {{}};");
+    }
+
     private static string BuildBodyConditionForCompareBranch(Code opcode, string left, string right)
     {
         return opcode switch
@@ -672,6 +819,234 @@ internal sealed class HookBodyGenerator
             Code.Blt or Code.Blt_S or Code.Blt_Un or Code.Blt_Un_S => $"({left} >= {right})",
             _ => throw new NotSupportedException($"Unsupported compare branch opcode {opcode}"),
         };
+    }
+
+    private string ExtendConditionChain(string initialCondition, ref int bodyStartIndex, int targetIndex, int endIndex)
+    {
+        var conditions = new List<string> { initialCondition };
+
+        while (TryReadAdditionalCondition(ref bodyStartIndex, targetIndex, endIndex, out var additionalCondition))
+            conditions.Add(additionalCondition);
+
+        return conditions.Count == 1 ? initialCondition : string.Join(" && ", conditions.Select(condition => $"({condition})"));
+    }
+
+    private bool TryReadAdditionalCondition(ref int scanStartIndex, int targetIndex, int endIndex, out string positiveCondition)
+    {
+        positiveCondition = "";
+        var snapshot = CaptureSnapshot();
+
+        for (var index = scanStartIndex; index < targetIndex; index++)
+        {
+            var instruction = _instructions[index];
+            if (TryReadBranchPositiveCondition(instruction, index, targetIndex, endIndex, out positiveCondition))
+            {
+                scanStartIndex = index + 1;
+                return true;
+            }
+
+            var lineCount = Lines.Count;
+            try
+            {
+                EmitInstruction(instruction, 0);
+            }
+            catch
+            {
+                RestoreSnapshot(snapshot);
+                positiveCondition = "";
+                return false;
+            }
+
+            if (Lines.Count != lineCount)
+            {
+                RestoreSnapshot(snapshot);
+                positiveCondition = "";
+                return false;
+            }
+        }
+
+        RestoreSnapshot(snapshot);
+        positiveCondition = "";
+        return false;
+    }
+
+    private bool TryReadBranchPositiveCondition(Instruction instruction, int sourceIndex, int expectedTargetIndex, int endIndex, out string positiveCondition)
+    {
+        positiveCondition = "";
+
+        switch (instruction.OpCode.Code)
+        {
+            case Code.Brfalse:
+            case Code.Brfalse_S:
+            case Code.Brtrue:
+            case Code.Brtrue_S:
+            {
+                if (!TryGetBranchTargetIndex(instruction, sourceIndex, endIndex, out var targetIndex) || targetIndex != expectedTargetIndex)
+                    return false;
+
+                positiveCondition = instruction.OpCode.Code is Code.Brfalse or Code.Brfalse_S ? Pop().Code : NegateCondition(Pop().Code);
+                return true;
+            }
+            case Code.Beq:
+            case Code.Beq_S:
+            case Code.Bne_Un:
+            case Code.Bne_Un_S:
+            case Code.Bge:
+            case Code.Bge_S:
+            case Code.Bge_Un:
+            case Code.Bge_Un_S:
+            case Code.Bgt:
+            case Code.Bgt_S:
+            case Code.Bgt_Un:
+            case Code.Bgt_Un_S:
+            case Code.Ble:
+            case Code.Ble_S:
+            case Code.Ble_Un:
+            case Code.Ble_Un_S:
+            case Code.Blt:
+            case Code.Blt_S:
+            case Code.Blt_Un:
+            case Code.Blt_Un_S:
+            {
+                if (!TryGetBranchTargetIndex(instruction, sourceIndex, endIndex, out var targetIndex) || targetIndex != expectedTargetIndex)
+                    return false;
+
+                var right = Pop();
+                var left = Pop();
+                positiveCondition = BuildBodyConditionForCompareBranch(instruction.OpCode.Code, left.Code, right.Code);
+                return true;
+            }
+            default:
+                return false;
+        }
+    }
+
+    private bool TryGetElseBranch(int bodyStartIndex, int bodyEndIndex, int endIndex, out int thenEndIndex, out int elseEndIndex)
+    {
+        thenEndIndex = bodyEndIndex;
+        elseEndIndex = bodyEndIndex;
+
+        var finalInstructionIndex = FindLastMeaningfulInstructionIndex(bodyStartIndex, bodyEndIndex);
+        if (finalInstructionIndex < bodyStartIndex)
+            return false;
+
+        var finalInstruction = _instructions[finalInstructionIndex];
+        if (finalInstruction.OpCode.Code is not (Code.Br or Code.Br_S))
+            return false;
+
+        var targetInstruction = (Instruction)finalInstruction.Operand;
+        if (!_instructionIndices.TryGetValue(targetInstruction, out var targetIndex) || targetIndex <= bodyEndIndex || targetIndex > endIndex)
+            return false;
+
+        thenEndIndex = finalInstructionIndex;
+        elseEndIndex = targetIndex;
+        return true;
+    }
+
+    private int FindLastMeaningfulInstructionIndex(int startIndex, int endIndex)
+    {
+        for (var index = endIndex - 1; index >= startIndex; index--)
+        {
+            if (_instructions[index].OpCode.Code != Code.Nop)
+                return index;
+        }
+
+        return startIndex - 1;
+    }
+
+    private bool IsEffectivelyEmptyRange(int startIndex, int endIndex)
+    {
+        return FindLastMeaningfulInstructionIndex(startIndex, endIndex) < startIndex;
+    }
+
+    private static string NegateCondition(string condition) => $"!({condition})";
+
+    private bool TryGetBranchTargetIndex(Instruction branchInstruction, int sourceIndex, int endIndex, out int targetIndex)
+    {
+        targetIndex = -1;
+        var targetInstruction = (Instruction)branchInstruction.Operand;
+        return _instructionIndices.TryGetValue(targetInstruction, out targetIndex) && targetIndex > sourceIndex && targetIndex <= endIndex;
+    }
+
+    private bool TryBuildReturnFromBranchTarget(Instruction targetInstruction, out string returnExpression)
+    {
+        returnExpression = "";
+        if (!_instructionIndices.TryGetValue(targetInstruction, out var targetIndex) || targetIndex >= _instructions.Count - 1)
+            return false;
+
+        var valueInstruction = _instructions[targetIndex];
+        var retInstruction = _instructions[targetIndex + 1];
+        if (retInstruction.OpCode.Code != Code.Ret)
+            return false;
+
+        if (TryGetLoadedLocalIndex(valueInstruction, out var localIndex))
+        {
+            returnExpression = GetLocalName(localIndex);
+            return true;
+        }
+
+        if (TryGetLoadedArgumentIndex(valueInstruction, out var argumentIndex))
+        {
+            returnExpression = GetArgumentName(argumentIndex);
+            return true;
+        }
+
+        return false;
+    }
+
+    private TranslationSnapshot CaptureSnapshot()
+    {
+        return new TranslationSnapshot(_stack.ToArray(), Lines.Count, _declaredLocals.OrderBy(index => index).ToArray());
+    }
+
+    private void RestoreSnapshot(TranslationSnapshot snapshot)
+    {
+        _stack.Clear();
+        for (var index = snapshot.StackValues.Length - 1; index >= 0; index--)
+            _stack.Push(snapshot.StackValues[index]);
+
+        if (Lines.Count > snapshot.LineCount)
+            Lines.RemoveRange(snapshot.LineCount, Lines.Count - snapshot.LineCount);
+
+        _declaredLocals.Clear();
+        foreach (var localIndex in snapshot.DeclaredLocals)
+            _declaredLocals.Add(localIndex);
+    }
+
+    private CppValue BuildNewObjectValue(MethodReference constructor, IReadOnlyList<CppValue> args)
+    {
+        var declaringType = constructor.DeclaringType;
+        var declaringTypeName = $"{_typeSystem.MapNamespace(declaringType.Namespace)}::{_typeSystem.ComposeTypeName(declaringType)}";
+        var argumentList = string.Join(", ", args.Select(arg => arg.Code));
+
+        if (declaringType.IsValueType || declaringType.Resolve()?.IsValueType == true)
+        {
+            var mappedType = _typeSystem.MapType(declaringType);
+            var ctorBody = args.Count == 0 ? "return value;" : $"value._ctor({argumentList}); return value;";
+            return new CppValue
+            {
+                Code = $"[&]() {{ {mappedType} value{{}}; {ctorBody} }}()",
+                Type = declaringType,
+                PreferAutoDeclaration = true,
+                HasSideEffects = true,
+            };
+        }
+
+        return new CppValue
+        {
+            Code = $"{declaringTypeName}::New_ctor({argumentList})",
+            Type = declaringType,
+            PreferAutoDeclaration = true,
+            HasSideEffects = true,
+        };
+    }
+
+    private string BuildCastExpression(TypeReference targetType, string operandCode)
+    {
+        var mappedType = _typeSystem.MapType(targetType);
+        return mappedType.EndsWith("*", StringComparison.Ordinal) || mappedType.EndsWith("&", StringComparison.Ordinal)
+            ? $"reinterpret_cast<{mappedType}>({operandCode})"
+            : $"static_cast<{mappedType}>({operandCode})";
     }
 
     private CppValue Pop()
@@ -687,6 +1062,16 @@ internal sealed class HookBodyGenerator
         return _localNames.TryGetValue(index, out var name) ? name : $"local{index}";
     }
 
+    private string GetArgumentName(int index)
+    {
+        return _parameterNames.TryGetValue(index, out var name) ? name : $"arg{index}";
+    }
+
+    private static string BuildConfigAccessorKey(string declaringTypeFullName, string memberName)
+    {
+        return $"{declaringTypeFullName}::{memberName}";
+    }
+
     private void RequiredInclude(TypeReference? type)
     {
         var include = _typeSystem.GetIncludePath(type);
@@ -697,6 +1082,39 @@ internal sealed class HookBodyGenerator
     private void AppendLine(int indentLevel, string line = "")
     {
         Lines.Add($"{new string(' ', indentLevel * 4)}{line}");
+    }
+
+    private static string GetMemberAccessOperator(TypeReference? type)
+    {
+        if (type == null)
+            return "->";
+
+        if (type is ByReferenceType byReferenceType)
+            return IsValueType(byReferenceType.ElementType) ? "." : "->";
+
+        return IsValueType(type) ? "." : "->";
+    }
+
+    private static bool IsValueType(TypeReference? type)
+    {
+        if (type == null)
+            return false;
+
+        if (type is ByReferenceType byReferenceType)
+            return IsValueType(byReferenceType.ElementType);
+
+        return type.IsValueType || type.Resolve()?.IsValueType == true;
+    }
+
+    private static bool IsBooleanType(TypeReference? type)
+    {
+        if (type == null)
+            return false;
+
+        if (type is ByReferenceType byReferenceType)
+            return IsBooleanType(byReferenceType.ElementType);
+
+        return type.FullName == "System.Boolean";
     }
 
     private static bool TryGetLocalIndex(Instruction instruction, out int localIndex)
@@ -747,6 +1165,32 @@ internal sealed class HookBodyGenerator
                 return true;
             default:
                 localIndex = -1;
+                return false;
+        }
+    }
+
+    private static bool TryGetLoadedArgumentIndex(Instruction instruction, out int argumentIndex)
+    {
+        switch (instruction.OpCode.Code)
+        {
+            case Code.Ldarg_0:
+                argumentIndex = 0;
+                return true;
+            case Code.Ldarg_1:
+                argumentIndex = 1;
+                return true;
+            case Code.Ldarg_2:
+                argumentIndex = 2;
+                return true;
+            case Code.Ldarg_3:
+                argumentIndex = 3;
+                return true;
+            case Code.Ldarg:
+            case Code.Ldarg_S:
+                argumentIndex = ((ParameterDefinition)instruction.Operand).Index;
+                return true;
+            default:
+                argumentIndex = -1;
                 return false;
         }
     }
