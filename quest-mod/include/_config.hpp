@@ -7,3 +7,6 @@
 
 static bool Enabled = true;
 static Il2CppString* ButtonText = il2cpp_utils::newcsstr("Skill Issue");
+static Il2CppString* PrefixSuffix = il2cpp_utils::newcsstr(" [pre]");
+static Il2CppString* PostfixSuffix = il2cpp_utils::newcsstr(" [post]");
+static Il2CppString* VersionStatusText = il2cpp_utils::newcsstr("Mod Active");

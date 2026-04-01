@@ -9,7 +9,7 @@ internal static class Program
     {
         if (!CommandLineOptions.TryParse(args, out var options, out var error))
         {
-            // Transpiler.exe --dir C:\Users\Administrator\Downloads\Files\fit\SampleMod C:\Users\Administrator\Downloads\Files\fit\output
+            // Transpiler.exe --dir C:\Users\Administrator\Downloads\Files\fit\SampleMod C:\Users\Administrator\Downloads\Files\fit\quest-mod
             Console.Error.WriteLine(error);
             PrintUsage();
             return 1;
@@ -20,11 +20,11 @@ internal static class Program
             var assemblyPath = AssemblyLocator.ResolveAssemblyPath(options.InputPath);
             Console.WriteLine($"Using assembly: {assemblyPath}");
 
-            var transpiler = new CecilTranspiler(assemblyPath);
+            var transpiler = new Transpiler(assemblyPath);
             transpiler.Load();
             transpiler.GenerateOutput(Path.GetFullPath(options.OutputDirectory));
 
-            Console.WriteLine($"Generated {transpiler.GeneratedFiles.Count} file(s) in {Path.GetFullPath(options.OutputDirectory)}");
+            Console.WriteLine($"Generated {transpiler.GeneratedArtifacts.Count} file(s) in {Path.GetFullPath(options.OutputDirectory)}");
             return 0;
         }
         catch (Exception ex)

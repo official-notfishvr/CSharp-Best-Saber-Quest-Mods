@@ -44,7 +44,7 @@ internal sealed class CppTypeSystem
             return $"{MapType(pointerType.ElementType)}*";
 
         if (normalized is ArrayType arrayType)
-            return $"ArrayW<{MapArrayElementType(arrayType.ElementType)}>";
+            return $"ArrayW<{MapArrayElementTypeName(arrayType.ElementType)}>";
 
         if (normalized is GenericParameter)
             return "Il2CppObject*";
@@ -134,6 +134,12 @@ internal sealed class CppTypeSystem
         return "nullptr";
     }
 
+    public string MapArrayElementTypeName(TypeReference elementType)
+    {
+        var elementFullName = Normalize(elementType).FullName;
+        return PrimitiveTypes.TryGetValue(elementFullName, out var mapped) ? mapped.TrimEnd('*') : "Il2CppObject*";
+    }
+
     private static TypeReference Normalize(TypeReference type)
     {
         if (type is OptionalModifierType optionalModifierType)
@@ -141,12 +147,6 @@ internal sealed class CppTypeSystem
         if (type is RequiredModifierType requiredModifierType)
             return Normalize(requiredModifierType.ElementType);
         return type;
-    }
-
-    private static string MapArrayElementType(TypeReference elementType)
-    {
-        var elementFullName = Normalize(elementType).FullName;
-        return PrimitiveTypes.TryGetValue(elementFullName, out var mapped) ? mapped.TrimEnd('*') : "Il2CppObject*";
     }
 
     private static string StripArity(string name)

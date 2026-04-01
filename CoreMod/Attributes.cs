@@ -1,5 +1,12 @@
 namespace CoreMod;
 
+public enum HookPhase
+{
+    Full = 0,
+    Prefix = 1,
+    Postfix = 2,
+}
+
 [AttributeUsage(AttributeTargets.Method)]
 public sealed class HookAttribute : Attribute
 {
@@ -7,6 +14,7 @@ public sealed class HookAttribute : Attribute
     public Type? TargetType { get; set; }
     public string? ClassName { get; set; }
     public bool IsConstructor { get; set; }
+    public HookPhase Phase { get; set; } = HookPhase.Full;
 
     public HookAttribute() { }
 
