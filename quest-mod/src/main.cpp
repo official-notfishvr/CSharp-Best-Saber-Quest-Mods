@@ -1,8 +1,10 @@
 #include "main.hpp"
 #include "scotland2/shared/modloader.h"
 
+#include "GlobalNamespace/UnityXRController.hpp"
 #include "GlobalNamespace/UnityXRHelper.hpp"
 #include "UnityEngine/Vector2.hpp"
+#include "UnityEngine/XR/XRNode.hpp"
 
 static modloader::ModInfo modInfo{"com.csharp.quest.pausekey", "0.1.0", 0};
 
@@ -42,44 +44,44 @@ MAKE_HOOK_MATCH(
         else {
             local3 = (PauseBinding == 1);
             if (local3) {
-                local4 = (self->_leftController == nullptr);
+                local4 = (self->____leftController == nullptr);
                 if (local4) {
                     local1 = 0;
                     return local1;
                 }
-                local1 = ((self->GetTriggerValue(self->_leftController->___node) < TriggerThreshold) == 0);
+                local1 = ((self->GetTriggerValue(self->____leftController->___node) < TriggerThreshold) == 0);
             }
             else {
                 local5 = (PauseBinding == 2);
                 if (local5) {
-                    local6 = (self->_rightController == nullptr);
+                    local6 = (self->____rightController == nullptr);
                     if (local6) {
                         local1 = 0;
                         return local1;
                     }
-                    local1 = ((self->GetTriggerValue(self->_rightController->___node) < TriggerThreshold) == 0);
+                    local1 = ((self->GetTriggerValue(self->____rightController->___node) < TriggerThreshold) == 0);
                 }
                 else {
                     local7 = (PauseBinding == 3);
                     if (local7) {
-                        local9 = (self->_leftController == nullptr);
+                        local9 = (self->____leftController == nullptr);
                         if (local9) {
                             local1 = 0;
                             return local1;
                         }
-                        auto thumbstick = self->GetThumbstickValue(self->_leftController->___node);
-                        local1 = ((((thumbstick.x * thumbstick.x) + (thumbstick.y * thumbstick.y)) < (ThumbstickThreshold * ThumbstickThreshold)) == 0);
+                        auto thumbstick = self->GetThumbstickValue(self->____leftController->___node);
+                        local1 = ((UnityEngine::Vector2::SqrMagnitude(thumbstick) < (ThumbstickThreshold * ThumbstickThreshold)) == 0);
                     }
                     else {
                         local10 = (PauseBinding == 4);
                         if (local10) {
-                            local12 = (self->_rightController == nullptr);
+                            local12 = (self->____rightController == nullptr);
                             if (local12) {
                                 local1 = 0;
                                 return local1;
                             }
-                            auto thumbstick_1 = self->GetThumbstickValue(self->_rightController->___node);
-                            local1 = ((((thumbstick_1.x * thumbstick_1.x) + (thumbstick_1.y * thumbstick_1.y)) < (ThumbstickThreshold * ThumbstickThreshold)) == 0);
+                            auto thumbstick_1 = self->GetThumbstickValue(self->____rightController->___node);
+                            local1 = ((UnityEngine::Vector2::SqrMagnitude(thumbstick_1) < (ThumbstickThreshold * ThumbstickThreshold)) == 0);
                         }
                         else {
                             local1 = 0;
@@ -126,32 +128,32 @@ MAKE_HOOK_MATCH(
             isPressed = 0;
             local5 = (PauseBinding == 1);
             if (local5) {
-                local6 = (self->_leftController != nullptr);
+                local6 = (self->____leftController != nullptr);
                 if (local6) {
-                    isPressed = ((self->GetTriggerValue(self->_leftController->___node) < TriggerThreshold) == 0);
+                    isPressed = ((self->GetTriggerValue(self->____leftController->___node) < TriggerThreshold) == 0);
                 }
             }
             local7 = (PauseBinding == 2);
             if (local7) {
-                local8 = (self->_rightController != nullptr);
+                local8 = (self->____rightController != nullptr);
                 if (local8) {
-                    isPressed = ((self->GetTriggerValue(self->_rightController->___node) < TriggerThreshold) == 0);
+                    isPressed = ((self->GetTriggerValue(self->____rightController->___node) < TriggerThreshold) == 0);
                 }
             }
             local9 = (PauseBinding == 3);
             if (local9) {
-                local10 = (self->_leftController != nullptr);
+                local10 = (self->____leftController != nullptr);
                 if (local10) {
-                    auto thumbstick = self->GetThumbstickValue(self->_leftController->___node);
-                    isPressed = ((((thumbstick.x * thumbstick.x) + (thumbstick.y * thumbstick.y)) < (ThumbstickThreshold * ThumbstickThreshold)) == 0);
+                    auto thumbstick = self->GetThumbstickValue(self->____leftController->___node);
+                    isPressed = ((UnityEngine::Vector2::SqrMagnitude(thumbstick) < (ThumbstickThreshold * ThumbstickThreshold)) == 0);
                 }
             }
             local12 = (PauseBinding == 4);
             if (local12) {
-                local13 = (self->_rightController != nullptr);
+                local13 = (self->____rightController != nullptr);
                 if (local13) {
-                    auto thumbstick_1 = self->GetThumbstickValue(self->_rightController->___node);
-                    isPressed = ((((thumbstick_1.x * thumbstick_1.x) + (thumbstick_1.y * thumbstick_1.y)) < (ThumbstickThreshold * ThumbstickThreshold)) == 0);
+                    auto thumbstick_1 = self->GetThumbstickValue(self->____rightController->___node);
+                    isPressed = ((UnityEngine::Vector2::SqrMagnitude(thumbstick_1) < (ThumbstickThreshold * ThumbstickThreshold)) == 0);
                 }
             }
             pressedThisFrame = 0;

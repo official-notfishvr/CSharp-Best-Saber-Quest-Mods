@@ -371,7 +371,7 @@ internal sealed partial class IlMethodTranslator
         }
 
         var target = Pop();
-        var fieldName = MapInstanceFieldName(field);
+        var fieldName = ResolveInstanceFieldName(field);
         _stack.Push(
             new CppExpression
             {
@@ -406,7 +406,7 @@ internal sealed partial class IlMethodTranslator
         }
 
         var target = Pop();
-        var fieldName = MapInstanceFieldName(field);
+        var fieldName = ResolveInstanceFieldName(field);
         AppendLine(indentLevel, $"{target.Code}{GetMemberAccessOperator(target.Type)}{fieldName} = {value.Code};");
     }
 
@@ -555,13 +555,12 @@ internal sealed partial class IlMethodTranslator
             return;
         }
 
-        if (method.DeclaringType.FullName == "UnityEngine.Vector2" && method.Name == "SqrMagnitude" && args.Count == 1)
+        if (TryBuildSquaredMagnitudeIntrinsic(method, args, out var squaredMagnitudeExpression))
         {
-            var vector = args[0].Code;
             _stack.Push(
                 new CppExpression
                 {
-                    Code = $"(({vector}.x * {vector}.x) + ({vector}.y * {vector}.y))",
+                    Code = squaredMagnitudeExpression,
                     Type = method.ReturnType,
                     PreferAutoDeclaration = true,
                 }
@@ -587,17 +586,6 @@ internal sealed partial class IlMethodTranslator
     {
         var argumentList = string.Join(", ", args.Select(arg => arg.Code));
         var declaringType = $"{_typeSystem.MapNamespace(method.DeclaringType.Namespace)}::{_typeSystem.ComposeTypeName(method.DeclaringType)}";
-
-        if (method.DeclaringType.FullName == "UnityEngine.Vector2" && method.Name == "SqrMagnitude" && args.Count == 1)
-        {
-            var vector = args[0].Code;
-            return new CppExpression
-            {
-                Code = $"(({vector}.x * {vector}.x) + ({vector}.y * {vector}.y))",
-                Type = method.ReturnType,
-                PreferAutoDeclaration = true,
-            };
-        }
 
         if (method.Name == ".ctor" && instance != null)
         {
@@ -839,11 +827,93 @@ internal sealed partial class IlMethodTranslator
         return mappedType.EndsWith("*", StringComparison.Ordinal) || mappedType.EndsWith("&", StringComparison.Ordinal) ? $"reinterpret_cast<{mappedType}>({operandCode})" : $"static_cast<{mappedType}>({operandCode})";
     }
 
-    private static string MapInstanceFieldName(FieldReference field)
+    private string ResolveInstanceFieldName(FieldReference field)
     {
-        if (field.DeclaringType.FullName == "GlobalNamespace.UnityXRController" && field.Name == "node")
-            return "___node";
+        return _metadataIndex.ResolveFieldStorageName(field.DeclaringType.FullName, field.Name) ?? field.Name;
+    }
 
-        return field.Name;
+    private bool TryBuildSquaredMagnitudeIntrinsic(MethodReference method, IReadOnlyList<CppExpression> args, out string expression)
+    {
+        expression = "";
+        if (method.HasThis || method.Name != "SqrMagnitude" || args.Count != 1)
+            return false;
+
+        var argumentType = NormalizeTypeReference(args[0].Type);
+        var declaringType = NormalizeTypeReference(method.DeclaringType);
+        if (argumentType == null || declaringType == null)
+            return false;
+
+        if (!string.Equals(argumentType.FullName, declaringType.FullName, StringComparison.Ordinal))
+        {
+            var argumentResolved = argumentType.Resolve();
+            var declaringResolved = declaringType.Resolve();
+            if (argumentResolved == null || declaringResolved == null || !string.Equals(argumentResolved.FullName, declaringResolved.FullName, StringComparison.Ordinal))
+                return false;
+        }
+
+        var componentFields = ResolveVectorLikeComponentFields(argumentType, declaringType.FullName);
+        if (componentFields.Count == 0)
+            return false;
+
+        var accessOperator = GetMemberAccessOperator(argumentType);
+        var terms = componentFields.Select(fieldName =>
+        {
+            var storageName = _metadataIndex.ResolveFieldStorageName(method.DeclaringType.FullName, fieldName) ?? fieldName;
+            return $"({args[0].Code}{accessOperator}{storageName} * {args[0].Code}{accessOperator}{storageName})";
+        });
+
+        expression = $"({string.Join(" + ", terms)})";
+        return true;
+    }
+
+    private static TypeReference? NormalizeTypeReference(TypeReference? type)
+    {
+        while (type is OptionalModifierType optionalModifierType)
+            type = optionalModifierType.ElementType;
+
+        while (type is RequiredModifierType requiredModifierType)
+            type = requiredModifierType.ElementType;
+
+        while (type is ByReferenceType byReferenceType)
+            type = byReferenceType.ElementType;
+
+        return type;
+    }
+
+    private IReadOnlyList<string> ResolveVectorLikeComponentFields(TypeReference argumentType, string declaringTypeFullName)
+    {
+        var metadataFields = _metadataIndex.ResolveSquaredMagnitudeComponentFields(declaringTypeFullName);
+        if (metadataFields.Count > 0)
+            return metadataFields;
+
+        var resolvedType = argumentType.Resolve();
+        if (resolvedType == null || !resolvedType.IsValueType)
+            return Array.Empty<string>();
+
+        var numericFields = new List<string>();
+        foreach (var candidate in new[] { "x", "y", "z", "w" })
+        {
+            var field = resolvedType.Fields.FirstOrDefault(item => string.Equals(item.Name, candidate, StringComparison.Ordinal));
+            if (field == null || field.IsStatic || !IsNumericMetadataType(field.FieldType.MetadataType))
+                break;
+
+            numericFields.Add(field.Name);
+        }
+
+        return numericFields.Count >= 2 ? numericFields : Array.Empty<string>();
+    }
+
+    private static bool IsNumericMetadataType(MetadataType metadataType)
+    {
+        return metadataType is MetadataType.Byte
+            or MetadataType.SByte
+            or MetadataType.Int16
+            or MetadataType.UInt16
+            or MetadataType.Int32
+            or MetadataType.UInt32
+            or MetadataType.Int64
+            or MetadataType.UInt64
+            or MetadataType.Single
+            or MetadataType.Double;
     }
 }

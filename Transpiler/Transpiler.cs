@@ -861,7 +861,7 @@ internal sealed class Transpiler
             switch (instruction.Operand)
             {
                 case MethodReference referencedMethod:
-                    if (referencedMethod.DeclaringType.Resolve()?.Module == _module)
+                    if (IsTranspilerOwnedType(referencedMethod.DeclaringType))
                         break;
 
                     if (_typeSystem.GetIncludePath(referencedMethod.DeclaringType) is { } methodDeclaringTypeInclude)
@@ -879,7 +879,7 @@ internal sealed class Transpiler
                     break;
 
                 case FieldReference referencedField:
-                    if (referencedField.DeclaringType.Resolve()?.Module == _module)
+                    if (IsTranspilerOwnedType(referencedField.DeclaringType))
                         break;
 
                     if (_typeSystem.GetIncludePath(referencedField.DeclaringType) is { } fieldDeclaringTypeInclude)
@@ -898,7 +898,7 @@ internal sealed class Transpiler
         if (_module == null)
             yield break;
 
-        var pending = new Stack<TypeDefinition>(_module.Types.Reverse());
+        var pending = new Stack<TypeDefinition>(_module.Types.Where(IsTranspilerRelevantType).Reverse());
         while (pending.Count > 0)
         {
             var type = pending.Pop();
@@ -908,5 +908,11 @@ internal sealed class Transpiler
             for (var i = type.NestedTypes.Count - 1; i >= 0; i--)
                 pending.Push(type.NestedTypes[i]);
         }
+    }
+
+    private bool IsTranspilerOwnedType(TypeReference? type)
+    {
+        var resolved = type?.Resolve();
+        return resolved != null && IsTranspilerRelevantType(resolved);
     }
 }

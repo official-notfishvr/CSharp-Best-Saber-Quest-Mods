@@ -47,6 +47,44 @@ internal sealed class TypeMetadataIndex
         return property.Name;
     }
 
+    public string? ResolveFieldStorageName(string declaringTypeFullName, string fieldName)
+    {
+        if (!_types.TryGetValue(declaringTypeFullName, out var type))
+            return null;
+
+        var field = type.Fields.FirstOrDefault(item => string.Equals(item.Name, fieldName, StringComparison.Ordinal));
+        if (field == null)
+            return null;
+
+        return type.IsValueType ? field.Name : $"___{field.Name}";
+    }
+
+    public IReadOnlyList<string> ResolveSquaredMagnitudeComponentFields(string declaringTypeFullName)
+    {
+        if (!_types.TryGetValue(declaringTypeFullName, out var type) || !type.IsValueType)
+            return Array.Empty<string>();
+
+        var numericFields = new List<string>();
+        foreach (var candidate in new[] { "x", "y", "z", "w" })
+        {
+            var field = type.Fields.FirstOrDefault(item => string.Equals(item.Name, candidate, StringComparison.Ordinal));
+            if (field == null || !IsNumericFieldType(field.Type))
+                break;
+
+            numericFields.Add(field.Name);
+        }
+
+        return numericFields.Count >= 2 ? numericFields : Array.Empty<string>();
+    }
+
+    private static bool IsNumericFieldType(string? type)
+    {
+        if (string.IsNullOrWhiteSpace(type))
+            return false;
+
+        return type is "float" or "double" or "int32_t" or "uint32_t" or "int64_t" or "uint64_t" or "int16_t" or "uint16_t" or "int8_t" or "uint8_t";
+    }
+
     private static string? FindMetadataPath(string assemblyPath)
     {
         var assemblyDirectory = Path.GetDirectoryName(assemblyPath);
@@ -73,7 +111,9 @@ internal sealed class GeneratedTypeMetadataRecord
 {
     public string Namespace { get; set; } = "";
     public string TypeName { get; set; } = "";
+    public bool IsValueType { get; set; }
     public List<GeneratedPropertyMetadataRecord> Properties { get; set; } = new();
+    public List<GeneratedFieldMetadataRecord> Fields { get; set; } = new();
 }
 
 internal sealed class GeneratedPropertyMetadataRecord
@@ -82,4 +122,11 @@ internal sealed class GeneratedPropertyMetadataRecord
     public bool HasGetter { get; set; }
     public bool HasSetter { get; set; }
     public string BackingFieldName { get; set; } = "";
+}
+
+internal sealed class GeneratedFieldMetadataRecord
+{
+    public string Name { get; set; } = "";
+    public string Type { get; set; } = "";
+    public bool IsStatic { get; set; }
 }
