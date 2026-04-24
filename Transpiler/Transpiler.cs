@@ -15,6 +15,7 @@ internal sealed class Transpiler
     private readonly string _assemblyPath;
     private readonly List<HookDefinition> _hooks = new();
     private readonly List<ConfigEntry> _configValues = new();
+    private readonly List<LocalStaticFieldEntry> _localStaticFields = new();
     private readonly CppTypeSystem _typeSystem = new();
     private readonly TypeMetadataIndex _metadataIndex;
     private ModuleDefinition? _module;
@@ -65,6 +66,7 @@ internal sealed class Transpiler
     {
         LoadModMetadata(type);
         LoadConfigs(type);
+        LoadLocalStaticFields(type);
         LoadHooks(type);
 
         foreach (var nestedType in type.NestedTypes)
@@ -95,6 +97,7 @@ internal sealed class Transpiler
                 continue;
 
             defaults.TryGetValue($"property:{property.Name}", out var defaultValueCpp);
+            defaultValueCpp ??= ReadNamedAttributeDefaultValue(configAttribute, property.PropertyType);
 
             _configValues.Add(
                 new ConfigEntry
@@ -116,6 +119,7 @@ internal sealed class Transpiler
                 continue;
 
             defaults.TryGetValue($"field:{field.Name}", out var defaultValueCpp);
+            defaultValueCpp ??= ReadNamedAttributeDefaultValue(configAttribute, field.FieldType);
 
             _configValues.Add(
                 new ConfigEntry
@@ -221,6 +225,9 @@ internal sealed class Transpiler
                     break;
                 case Code.Stsfld:
                 {
+                    if (stack.Count == 0)
+                        break;
+
                     var value = stack.Pop().Code;
                     var field = (FieldReference)instruction.Operand;
                     var propertyName = TryGetAutoPropertyName(field.Name);
@@ -272,6 +279,7 @@ internal sealed class Transpiler
         writer.WriteLine();
         writer.WriteLine("#include \"scotland2/shared/modloader.h\"");
         writer.WriteLine("#include \"beatsaber-hook/shared/config/config-utils.hpp\"");
+        writer.WriteLine("#define BS_HOOK_MATCH_UNSAFE");
         writer.WriteLine("#include \"beatsaber-hook/shared/utils/hooking.hpp\"");
         writer.WriteLine("#include \"beatsaber-hook/shared/utils/il2cpp-functions.hpp\"");
         writer.WriteLine("#include \"beatsaber-hook/shared/utils/logging.hpp\"");
@@ -287,7 +295,7 @@ internal sealed class Transpiler
 
     private void GenerateMainSource(string outputDirectory)
     {
-        var bodyGenerators = _hooks.ToDictionary(hook => hook, hook => new IlMethodTranslator(hook, _typeSystem, _configValues, _metadataIndex));
+        var bodyGenerators = _hooks.ToDictionary(hook => hook, hook => new IlMethodTranslator(hook, _typeSystem, _configValues, _localStaticFields, _metadataIndex));
 
         foreach (var generator in bodyGenerators.Values)
             generator.Translate();
@@ -299,6 +307,9 @@ internal sealed class Transpiler
             AddInclude(includeSet, _typeSystem.GetIncludePath(hook.TargetType));
             foreach (var parameter in hook.Method.Parameters)
                 AddInclude(includeSet, _typeSystem.GetIncludePath(parameter.ParameterType));
+
+            foreach (var include in CollectBodyIncludes(hook.Method))
+                AddInclude(includeSet, include);
         }
 
         foreach (var generator in bodyGenerators.Values)
@@ -306,6 +317,9 @@ internal sealed class Transpiler
             foreach (var include in generator.RequiredIncludes)
                 includeSet.Add(include);
         }
+
+        foreach (var localInclude in CollectCurrentModuleIncludePaths())
+            includeSet.Remove(localInclude);
 
         var hookEmissions = BuildHookEmissions(bodyGenerators);
 
@@ -320,6 +334,17 @@ internal sealed class Transpiler
         writer.WriteLine();
         writer.WriteLine($"static modloader::ModInfo modInfo{{\"{_modMetadata.Id}\", \"{_modMetadata.Version}\", 0}};");
         writer.WriteLine();
+
+        foreach (var field in _localStaticFields)
+        {
+            var cppType = _typeSystem.MapType(field.Type);
+            var defaultValue = field.DefaultValueCpp ?? _typeSystem.GetDefaultValue(field.Type);
+            writer.WriteLine($"static {cppType} {field.CppIdentifier} = {defaultValue};");
+        }
+
+        if (_localStaticFields.Count > 0)
+            writer.WriteLine();
+
         writer.WriteLine("Configuration &getConfig() {");
         writer.WriteLine("    static Configuration config(modInfo);");
         writer.WriteLine("    return config;");
@@ -460,6 +485,79 @@ internal sealed class Transpiler
         }
 
         return null;
+    }
+
+    private void LoadLocalStaticFields(TypeDefinition type)
+    {
+        if (!IsTranspilerRelevantType(type))
+            return;
+
+        var defaults = ReadStaticDefaults(type);
+
+        foreach (var field in type.Fields)
+        {
+            if (!field.IsStatic || field.IsLiteral)
+                continue;
+
+            if (field.CustomAttributes.Any(IsConfigAttribute))
+                continue;
+
+            var propertyName = TryGetAutoPropertyName(field.Name);
+            if (propertyName != null && type.Properties.Any(property => property.Name == propertyName && property.CustomAttributes.Any(IsConfigAttribute)))
+                continue;
+
+            if (!CanEmitLocalStaticField(field.FieldType))
+                continue;
+
+            defaults.TryGetValue($"field:{field.Name}", out var defaultValueCpp);
+            _localStaticFields.Add(
+                new LocalStaticFieldEntry
+                {
+                    Name = field.Name,
+                    CppIdentifier = BuildUniqueLocalStaticIdentifier(type.FullName, field.Name),
+                    DeclaringTypeFullName = type.FullName,
+                    Type = field.FieldType,
+                    DefaultValueCpp = defaultValueCpp,
+                }
+            );
+        }
+    }
+
+    private static string? ReadNamedAttributeDefaultValue(CustomAttribute attribute, TypeReference targetType)
+    {
+        foreach (var property in attribute.Properties)
+        {
+            if (string.Equals(property.Name, "DefaultValue", StringComparison.Ordinal))
+                return ConvertAttributeValueToCppLiteral(property.Argument.Value, targetType);
+        }
+
+        foreach (var field in attribute.Fields)
+        {
+            if (string.Equals(field.Name, "DefaultValue", StringComparison.Ordinal))
+                return ConvertAttributeValueToCppLiteral(field.Argument.Value, targetType);
+        }
+
+        return null;
+    }
+
+    private static string? ConvertAttributeValueToCppLiteral(object? value, TypeReference targetType)
+    {
+        if (value == null)
+            return null;
+
+        if (value is CustomAttributeArgument nestedArgument)
+            value = nestedArgument.Value;
+
+        return targetType.FullName switch
+        {
+            "System.Boolean" => value is bool boolValue ? (boolValue ? "true" : "false") : null,
+            "System.Single" => value is float floatValue ? floatValue.ToString("R", CultureInfo.InvariantCulture) : Convert.ToSingle(value, CultureInfo.InvariantCulture).ToString("R", CultureInfo.InvariantCulture),
+            "System.Double" => value is double doubleValue ? doubleValue.ToString("R", CultureInfo.InvariantCulture) : Convert.ToDouble(value, CultureInfo.InvariantCulture).ToString("R", CultureInfo.InvariantCulture),
+            "System.Byte" or "System.SByte" or "System.Int16" or "System.UInt16" or "System.Int32" or "System.UInt32" or "System.Int64" or "System.UInt64"
+                => Convert.ToString(value, CultureInfo.InvariantCulture),
+            "System.String" => value is string text ? CppLiteral.String(text) : CppLiteral.String(value.ToString() ?? string.Empty),
+            _ => Convert.ToString(value, CultureInfo.InvariantCulture),
+        };
     }
 
     private static bool ReadNamedAttributeBoolean(CustomAttribute attribute, string name)
@@ -685,6 +783,59 @@ internal sealed class Transpiler
         return $"{typeToken}_{nameToken}";
     }
 
+    private static string BuildUniqueLocalStaticIdentifier(string declaringTypeFullName, string fieldName)
+    {
+        var typeToken = CppIdentifier.Sanitize(declaringTypeFullName, "Static");
+        var nameToken = CppIdentifier.Sanitize(fieldName, "Value");
+        return $"{typeToken}_{nameToken}";
+    }
+
+    private static bool IsTranspilerRelevantType(TypeDefinition type)
+    {
+        if (type.CustomAttributes.Any(IsModAttribute))
+            return true;
+
+        if (type.Methods.Any(method => method.CustomAttributes.Any(IsHookAttribute)))
+            return true;
+
+        if (type.Fields.Any(field => field.CustomAttributes.Any(IsConfigAttribute)))
+            return true;
+
+        return type.Properties.Any(property => property.CustomAttributes.Any(IsConfigAttribute));
+    }
+
+    private bool CanEmitLocalStaticField(TypeReference type)
+    {
+        if (_module == null)
+            return false;
+
+        if (type is ByReferenceType byReferenceType)
+            return CanEmitLocalStaticField(byReferenceType.ElementType);
+
+        if (type is ArrayType arrayType)
+            return CanEmitLocalStaticField(arrayType.ElementType);
+
+        if (type is GenericInstanceType genericInstanceType)
+        {
+            if (!CanEmitLocalStaticField(genericInstanceType.ElementType))
+                return false;
+
+            foreach (var argument in genericInstanceType.GenericArguments)
+            {
+                if (!CanEmitLocalStaticField(argument))
+                    return false;
+            }
+
+            return true;
+        }
+
+        var resolved = type.Resolve();
+        if (resolved != null && resolved.Module == _module && resolved.FullName != "System.String")
+            return false;
+
+        return true;
+    }
+
     private static string? TryGetAutoPropertyName(string fieldName)
     {
         const string suffix = ">k__BackingField";
@@ -692,5 +843,70 @@ internal sealed class Transpiler
             return null;
 
         return fieldName[1..^suffix.Length];
+    }
+
+    private IEnumerable<string> CollectBodyIncludes(MethodDefinition method)
+    {
+        if (!method.HasBody || method.Body == null)
+            yield break;
+
+        foreach (var variable in method.Body.Variables)
+        {
+            if (_typeSystem.GetIncludePath(variable.VariableType) is { } variableInclude)
+                yield return variableInclude;
+        }
+
+        foreach (var instruction in method.Body.Instructions)
+        {
+            switch (instruction.Operand)
+            {
+                case MethodReference referencedMethod:
+                    if (referencedMethod.DeclaringType.Resolve()?.Module == _module)
+                        break;
+
+                    if (_typeSystem.GetIncludePath(referencedMethod.DeclaringType) is { } methodDeclaringTypeInclude)
+                        yield return methodDeclaringTypeInclude;
+
+                    if (_typeSystem.GetIncludePath(referencedMethod.ReturnType) is { } methodReturnTypeInclude)
+                        yield return methodReturnTypeInclude;
+
+                    foreach (var parameter in referencedMethod.Parameters)
+                    {
+                        if (_typeSystem.GetIncludePath(parameter.ParameterType) is { } methodParameterInclude)
+                            yield return methodParameterInclude;
+                    }
+
+                    break;
+
+                case FieldReference referencedField:
+                    if (referencedField.DeclaringType.Resolve()?.Module == _module)
+                        break;
+
+                    if (_typeSystem.GetIncludePath(referencedField.DeclaringType) is { } fieldDeclaringTypeInclude)
+                        yield return fieldDeclaringTypeInclude;
+
+                    if (_typeSystem.GetIncludePath(referencedField.FieldType) is { } fieldTypeInclude)
+                        yield return fieldTypeInclude;
+
+                    break;
+            }
+        }
+    }
+
+    private IEnumerable<string> CollectCurrentModuleIncludePaths()
+    {
+        if (_module == null)
+            yield break;
+
+        var pending = new Stack<TypeDefinition>(_module.Types.Reverse());
+        while (pending.Count > 0)
+        {
+            var type = pending.Pop();
+            if (_typeSystem.GetIncludePath(type) is { } include)
+                yield return include;
+
+            for (var i = type.NestedTypes.Count - 1; i >= 0; i--)
+                pending.Push(type.NestedTypes[i]);
+        }
     }
 }

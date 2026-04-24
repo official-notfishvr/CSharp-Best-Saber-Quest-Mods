@@ -27,6 +27,15 @@ internal sealed class ConfigEntry
     public string? DefaultValueCpp { get; init; }
 }
 
+internal sealed class LocalStaticFieldEntry
+{
+    public required string Name { get; init; }
+    public required string CppIdentifier { get; set; }
+    public required string DeclaringTypeFullName { get; init; }
+    public required TypeReference Type { get; init; }
+    public string? DefaultValueCpp { get; init; }
+}
+
 internal enum HookPhase
 {
     Full = 0,

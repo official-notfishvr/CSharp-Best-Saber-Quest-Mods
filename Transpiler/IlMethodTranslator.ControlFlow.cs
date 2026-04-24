@@ -12,12 +12,7 @@ internal sealed partial class IlMethodTranslator
         for (var index = startIndex; index < endIndex; index++)
         {
             var instruction = _instructions[index];
-
-            if (TryEmitStructuredIfFromLocalTemp(index, endIndex, indentLevel, out var consumedUntil))
-            {
-                index = consumedUntil - 1;
-                continue;
-            }
+            var consumedUntil = index;
 
             if (TryEmitStructuredIf(instruction, index, endIndex, indentLevel, out consumedUntil))
             {
@@ -114,6 +109,15 @@ internal sealed partial class IlMethodTranslator
 
     private bool TryEmitStructuredConditionalBlock(string positiveCondition, int bodyStartIndex, int bodyEndIndex, int endIndex, int indentLevel, out int consumedUntil)
     {
+        if (TryBuildEarlyExit(bodyStartIndex, bodyEndIndex, out var exitStatement))
+        {
+            AppendLine(indentLevel, $"if ({positiveCondition}) {{");
+            AppendLine(indentLevel + 1, exitStatement);
+            AppendLine(indentLevel, "}");
+            consumedUntil = bodyEndIndex;
+            return true;
+        }
+
         if (TryGetElseBranch(bodyStartIndex, bodyEndIndex, endIndex, out var thenEndIndex, out var elseEndIndex))
         {
             if (IsEffectivelyEmptyRange(bodyStartIndex, thenEndIndex))
@@ -327,5 +331,59 @@ internal sealed partial class IlMethodTranslator
         }
 
         return false;
+    }
+
+    private bool TryBuildEarlyExit(int startIndex, int endIndex, out string exitStatement)
+    {
+        exitStatement = "";
+        var finalInstructionIndex = FindLastMeaningfulInstructionIndex(startIndex, endIndex);
+        if (finalInstructionIndex < startIndex)
+            return false;
+
+        if (!AreAllMeaningfulInstructionsWithinRange(startIndex, endIndex, finalInstructionIndex))
+            return false;
+
+        var instruction = _instructions[finalInstructionIndex];
+        if (instruction.OpCode.Code == Code.Ret)
+        {
+            if (_method.ReturnType.FullName != "System.Void")
+                return false;
+
+            exitStatement = "return;";
+            return true;
+        }
+
+        if (instruction.OpCode.Code is not (Code.Br or Code.Br_S or Code.Leave or Code.Leave_S))
+            return false;
+
+        var targetInstruction = (Instruction)instruction.Operand;
+        if (TryBuildReturnFromBranchTarget(targetInstruction, out var returnExpression))
+        {
+            exitStatement = $"return {returnExpression};";
+            return true;
+        }
+
+        if (_instructionIndices.TryGetValue(targetInstruction, out var targetIndex) && targetIndex < _instructions.Count && _instructions[targetIndex].OpCode.Code == Code.Ret)
+        {
+            exitStatement = "return;";
+            return _method.ReturnType.FullName == "System.Void";
+        }
+
+        return false;
+    }
+
+    private bool AreAllMeaningfulInstructionsWithinRange(int startIndex, int endIndex, params int[] allowedIndices)
+    {
+        var allowed = new HashSet<int>(allowedIndices);
+        for (var index = startIndex; index < endIndex; index++)
+        {
+            if (_instructions[index].OpCode.Code == Code.Nop)
+                continue;
+
+            if (!allowed.Contains(index))
+                return false;
+        }
+
+        return true;
     }
 }

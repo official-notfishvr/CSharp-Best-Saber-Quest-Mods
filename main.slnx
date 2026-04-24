@@ -1,5 +1,7 @@
 <Solution>
     <Project Path="CoreMod/CoreMod.csproj" />
+    <Project Path="PauseKey/PauseKey.csproj" />
+    <Project Path="PracticeBookmarks/PracticeBookmarks.csproj" />
     <Project Path="SampleMod/SampleMod.csproj" />
     <Project Path="Transpiler/Transpiler.csproj" />
     <Project Path="TypeGenerator/TypeGenerator.csproj" />

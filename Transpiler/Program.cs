@@ -9,7 +9,7 @@ internal static class Program
     {
         if (!CommandLineOptions.TryParse(args, out var options, out var error))
         {
-            // Transpiler.exe --dir C:\Users\Administrator\Downloads\Files\fit\SampleMod C:\Users\Administrator\Downloads\Files\fit\quest-mod
+            // Transpiler.exe --dir E:\Other\VS\CSharp\CSharp-Best-Saber-Quest-Mods\SampleMod E:\Other\VS\CSharp\CSharp-Best-Saber-Quest-Mods\quest-mod
             Console.Error.WriteLine(error);
             PrintUsage();
             return 1;

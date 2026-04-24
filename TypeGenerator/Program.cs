@@ -13,7 +13,7 @@ class Program
 {
     static void Main(string[] args)
     {
-        // dotnet run --project c:\Users\Administrator\Downloads\Files\fit\TypeGenerator\TypeGenerator.csproj "C:\Users\Administrator\Downloads\Files\fit\quest-mod\extern\includes\bs-cordl\include" "C:\Users\Administrator\Downloads\Files\fit\TypeGenerator\Output"
+        // dotnet run --project E:\Other\VS\CSharp\CSharp-Best-Saber-Quest-Mods\TypeGenerator\TypeGenerator.csproj "E:\Other\VS\CSharp\CSharp-Best-Saber-Quest-Mods\quest-mod\extern\includes\bs-cordl\include" "E:\Other\VS\CSharp\CSharp-Best-Saber-Quest-Mods\TypeGenerator\Output"
         if (args.Length < 2)
         {
             Console.WriteLine("Usage: TypeGenerator <include-folder> <output-folder>");

@@ -52,6 +52,13 @@ internal sealed partial class IlMethodTranslator
 
     private void RequiredInclude(TypeReference? type)
     {
+        if (type == null)
+            return;
+
+        var resolved = type.Resolve();
+        if (resolved != null && resolved.Module == _method.Module)
+            return;
+
         var include = _typeSystem.GetIncludePath(type);
         if (include != null)
             RequiredIncludes.Add(include);
@@ -93,6 +100,46 @@ internal sealed partial class IlMethodTranslator
             return IsBooleanType(byReferenceType.ElementType);
 
         return type.FullName == "System.Boolean";
+    }
+
+    private static bool ShouldValueInitializeLocal(TypeReference? type)
+    {
+        if (type == null)
+            return true;
+
+        if (type is ByReferenceType)
+            return false;
+
+        if (type is PointerType or ArrayType)
+            return true;
+
+        if (!IsValueType(type))
+            return true;
+
+        return type.MetadataType is
+            MetadataType.Boolean or
+            MetadataType.Byte or
+            MetadataType.SByte or
+            MetadataType.Int16 or
+            MetadataType.UInt16 or
+            MetadataType.Int32 or
+            MetadataType.UInt32 or
+            MetadataType.Int64 or
+            MetadataType.UInt64 or
+            MetadataType.Single or
+            MetadataType.Double or
+            MetadataType.Char;
+    }
+
+    private static bool ShouldPredeclareLocal(TypeReference? type)
+    {
+        if (type == null)
+            return true;
+
+        if (!IsValueType(type))
+            return true;
+
+        return ShouldValueInitializeLocal(type);
     }
 
     private static bool TryGetLocalIndex(Instruction instruction, out int localIndex)
@@ -177,6 +224,18 @@ internal sealed partial class IlMethodTranslator
     {
         var map = new Dictionary<int, string>();
         VisitScope(method.DebugInformation.Scope, map);
+
+        var usedNames = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var key in map.Keys.OrderBy(index => index).ToArray())
+        {
+            var name = map[key];
+            if (!usedNames.TryAdd(name, 0))
+            {
+                usedNames[name]++;
+                map[key] = $"{name}_{usedNames[name]}";
+            }
+        }
+
         return map;
     }
 

@@ -357,6 +357,12 @@ internal sealed partial class IlMethodTranslator
             return;
         }
 
+        if (isStatic && _localStaticFieldsByField.TryGetValue(BuildConfigAccessorKey(field.DeclaringType.FullName, field.Name), out var localStaticField))
+        {
+            _stack.Push(new CppExpression { Code = localStaticField.CppIdentifier, Type = localStaticField.Type });
+            return;
+        }
+
         if (isStatic)
         {
             var declaringType = $"{_typeSystem.MapNamespace(field.DeclaringType.Namespace)}::{_typeSystem.ComposeTypeName(field.DeclaringType)}";
@@ -365,10 +371,11 @@ internal sealed partial class IlMethodTranslator
         }
 
         var target = Pop();
+        var fieldName = MapInstanceFieldName(field);
         _stack.Push(
             new CppExpression
             {
-                Code = $"{target.Code}{GetMemberAccessOperator(target.Type)}{field.Name}",
+                Code = $"{target.Code}{GetMemberAccessOperator(target.Type)}{fieldName}",
                 Type = field.FieldType,
                 PreferAutoDeclaration = !asAddress,
             }
@@ -385,6 +392,12 @@ internal sealed partial class IlMethodTranslator
             return;
         }
 
+        if (isStatic && _localStaticFieldsByField.TryGetValue(BuildConfigAccessorKey(field.DeclaringType.FullName, field.Name), out var localStaticField))
+        {
+            AppendLine(indentLevel, $"{localStaticField.CppIdentifier} = {value.Code};");
+            return;
+        }
+
         if (isStatic)
         {
             var declaringType = $"{_typeSystem.MapNamespace(field.DeclaringType.Namespace)}::{_typeSystem.ComposeTypeName(field.DeclaringType)}";
@@ -393,7 +406,8 @@ internal sealed partial class IlMethodTranslator
         }
 
         var target = Pop();
-        AppendLine(indentLevel, $"{target.Code}{GetMemberAccessOperator(target.Type)}{field.Name} = {value.Code};");
+        var fieldName = MapInstanceFieldName(field);
+        AppendLine(indentLevel, $"{target.Code}{GetMemberAccessOperator(target.Type)}{fieldName} = {value.Code};");
     }
 
     private void EmitNewArray(TypeReference elementType)
@@ -541,6 +555,20 @@ internal sealed partial class IlMethodTranslator
             return;
         }
 
+        if (method.DeclaringType.FullName == "UnityEngine.Vector2" && method.Name == "SqrMagnitude" && args.Count == 1)
+        {
+            var vector = args[0].Code;
+            _stack.Push(
+                new CppExpression
+                {
+                    Code = $"(({vector}.x * {vector}.x) + ({vector}.y * {vector}.y))",
+                    Type = method.ReturnType,
+                    PreferAutoDeclaration = true,
+                }
+            );
+            return;
+        }
+
         RequiredInclude(method.ReturnType);
         if (!method.HasThis)
             RequiredInclude(method.DeclaringType);
@@ -560,6 +588,17 @@ internal sealed partial class IlMethodTranslator
         var argumentList = string.Join(", ", args.Select(arg => arg.Code));
         var declaringType = $"{_typeSystem.MapNamespace(method.DeclaringType.Namespace)}::{_typeSystem.ComposeTypeName(method.DeclaringType)}";
 
+        if (method.DeclaringType.FullName == "UnityEngine.Vector2" && method.Name == "SqrMagnitude" && args.Count == 1)
+        {
+            var vector = args[0].Code;
+            return new CppExpression
+            {
+                Code = $"(({vector}.x * {vector}.x) + ({vector}.y * {vector}.y))",
+                Type = method.ReturnType,
+                PreferAutoDeclaration = true,
+            };
+        }
+
         if (method.Name == ".ctor" && instance != null)
         {
             return new CppExpression
@@ -567,16 +606,6 @@ internal sealed partial class IlMethodTranslator
                 Code = $"{instance.Code}{GetMemberAccessOperator(instance.Type)}_ctor({argumentList})",
                 Type = method.ReturnType,
                 HasSideEffects = true,
-            };
-        }
-
-        if (method.Name.StartsWith("get_", StringComparison.Ordinal) && TryGetPropertyAccessorName(method, out var propertyName) && instance != null)
-        {
-            return new CppExpression
-            {
-                Code = $"{instance.Code}{GetMemberAccessOperator(instance.Type)}{propertyName}",
-                Type = method.ReturnType,
-                PreferAutoDeclaration = true,
             };
         }
 
@@ -595,30 +624,9 @@ internal sealed partial class IlMethodTranslator
 
         if (method.Name.StartsWith("get_", StringComparison.Ordinal) || method.Name.StartsWith("set_", StringComparison.Ordinal))
         {
-            if (TryGetPropertyAccessorName(method, out var metadataPropertyName) && instance != null)
-            {
-                if (method.Name.StartsWith("get_", StringComparison.Ordinal))
-                {
-                    return new CppExpression
-                    {
-                        Code = instance != null ? $"{instance.Code}{GetMemberAccessOperator(instance.Type)}{metadataPropertyName}" : $"{declaringType}::{metadataPropertyName}",
-                        Type = method.ReturnType,
-                        PreferAutoDeclaration = true,
-                    };
-                }
-
-                return new CppExpression
-                {
-                    Code = instance != null ? $"{instance.Code}{GetMemberAccessOperator(instance.Type)}{metadataPropertyName} = {argumentList}" : $"{declaringType}::{metadataPropertyName} = {argumentList}",
-                    Type = method.ReturnType,
-                    HasSideEffects = true,
-                };
-            }
-
-            var accessorName = NormalizeAccessorName(method.Name);
             return new CppExpression
             {
-                Code = instance != null ? $"{instance.Code}{GetMemberAccessOperator(instance.Type)}{accessorName}({argumentList})" : $"{declaringType}::{accessorName}({argumentList})",
+                Code = instance != null ? $"{instance.Code}{GetMemberAccessOperator(instance.Type)}{method.Name}({argumentList})" : $"{declaringType}::{method.Name}({argumentList})",
                 Type = method.ReturnType,
                 PreferAutoDeclaration = method.Name.StartsWith("get_", StringComparison.Ordinal),
                 HasSideEffects = true,
@@ -643,17 +651,6 @@ internal sealed partial class IlMethodTranslator
             HasSideEffects = true,
         };
     }
-
-    private static string NormalizeAccessorName(string methodName)
-    {
-        var prefix = methodName[..4];
-        var suffix = methodName[4..];
-        if (string.IsNullOrEmpty(suffix))
-            return methodName;
-
-        return prefix + char.ToLowerInvariant(suffix[0]) + suffix[1..];
-    }
-
     private bool IsConfigAccessor(MethodReference method, out ConfigEntry config)
     {
         var declaringTypeFullName = method.DeclaringType.FullName;
@@ -840,5 +837,13 @@ internal sealed partial class IlMethodTranslator
     {
         var mappedType = _typeSystem.MapType(targetType);
         return mappedType.EndsWith("*", StringComparison.Ordinal) || mappedType.EndsWith("&", StringComparison.Ordinal) ? $"reinterpret_cast<{mappedType}>({operandCode})" : $"static_cast<{mappedType}>({operandCode})";
+    }
+
+    private static string MapInstanceFieldName(FieldReference field)
+    {
+        if (field.DeclaringType.FullName == "GlobalNamespace.UnityXRController" && field.Name == "node")
+            return "___node";
+
+        return field.Name;
     }
 }

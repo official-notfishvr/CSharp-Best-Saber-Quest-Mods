@@ -2,6 +2,7 @@
 
 #include "scotland2/shared/modloader.h"
 #include "beatsaber-hook/shared/config/config-utils.hpp"
+#define BS_HOOK_MATCH_UNSAFE
 #include "beatsaber-hook/shared/utils/hooking.hpp"
 #include "beatsaber-hook/shared/utils/il2cpp-functions.hpp"
 #include "beatsaber-hook/shared/utils/logging.hpp"
@@ -10,4 +11,4 @@
 
 Configuration &getConfig();
 
-constexpr auto PaperLogger = Paper::ConstLoggerContext("com.example.testmod");
+constexpr auto PaperLogger = Paper::ConstLoggerContext("com.csharp.quest.pausekey");

@@ -6,7 +6,6 @@
 #include "beatsaber-hook/shared/utils/il2cpp-utils.hpp"
 
 static bool Enabled = true;
-static Il2CppString* ButtonText = il2cpp_utils::newcsstr("Skill Issue");
-static Il2CppString* PrefixSuffix = il2cpp_utils::newcsstr(" [pre]");
-static Il2CppString* PostfixSuffix = il2cpp_utils::newcsstr(" [post]");
-static Il2CppString* VersionStatusText = il2cpp_utils::newcsstr("Mod Active");
+static int32_t PauseBinding = 4;
+static float TriggerThreshold = 0.75;
+static float ThumbstickThreshold = 0.85;

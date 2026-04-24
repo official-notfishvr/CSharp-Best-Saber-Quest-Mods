@@ -17,6 +17,7 @@ internal sealed partial class IlMethodTranslator
     private readonly Dictionary<string, ConfigEntry> _configByGetter;
     private readonly Dictionary<string, ConfigEntry> _configBySetter;
     private readonly Dictionary<string, ConfigEntry> _configByField;
+    private readonly Dictionary<string, LocalStaticFieldEntry> _localStaticFieldsByField;
     private readonly HashSet<int> _declaredLocals = new();
     private readonly Stack<CppExpression> _stack = new();
     private readonly TypeMetadataIndex _metadataIndex;
@@ -24,7 +25,7 @@ internal sealed partial class IlMethodTranslator
     private readonly MethodDefinition _method;
     private readonly IList<Instruction> _instructions;
 
-    public IlMethodTranslator(HookDefinition hook, CppTypeSystem typeSystem, IEnumerable<ConfigEntry> configValues, TypeMetadataIndex metadataIndex)
+    public IlMethodTranslator(HookDefinition hook, CppTypeSystem typeSystem, IEnumerable<ConfigEntry> configValues, IEnumerable<LocalStaticFieldEntry> localStaticFields, TypeMetadataIndex metadataIndex)
     {
         Hook = hook;
         _typeSystem = typeSystem;
@@ -37,6 +38,7 @@ internal sealed partial class IlMethodTranslator
         _configByGetter = configValues.ToDictionary(config => BuildConfigAccessorKey(config.DeclaringTypeFullName, $"get_{config.Name}"), config => config, StringComparer.Ordinal);
         _configBySetter = configValues.ToDictionary(config => BuildConfigAccessorKey(config.DeclaringTypeFullName, $"set_{config.Name}"), config => config, StringComparer.Ordinal);
         _configByField = configValues.ToDictionary(config => BuildConfigAccessorKey(config.DeclaringTypeFullName, config.Name), config => config, StringComparer.Ordinal);
+        _localStaticFieldsByField = localStaticFields.ToDictionary(field => BuildConfigAccessorKey(field.DeclaringTypeFullName, field.Name), field => field, StringComparer.Ordinal);
     }
 
     public HookDefinition Hook { get; }
@@ -47,6 +49,26 @@ internal sealed partial class IlMethodTranslator
     {
         if (!_method.HasBody || _method.Body == null)
             return;
+
+        for (var i = 0; i < _method.Body.Variables.Count; i++)
+        {
+            var variable = _method.Body.Variables[i];
+            if (variable.VariableType is ByReferenceType)
+                continue;
+
+            RequiredInclude(variable.VariableType);
+            if (!ShouldPredeclareLocal(variable.VariableType))
+                continue;
+
+            var declaration = ShouldValueInitializeLocal(variable.VariableType)
+                ? $"{_typeSystem.MapType(variable.VariableType)} {GetLocalName(i)}{{}};"
+                : $"{_typeSystem.MapType(variable.VariableType)} {GetLocalName(i)};";
+            AppendLine(0, declaration);
+            _declaredLocals.Add(i);
+        }
+
+        if (_declaredLocals.Count > 0)
+            AppendLine(0);
 
         TranslateRange(0, _instructions.Count, 0);
 
