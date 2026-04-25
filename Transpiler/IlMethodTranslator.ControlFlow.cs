@@ -14,6 +14,18 @@ internal sealed partial class IlMethodTranslator
             var instruction = _instructions[index];
             var consumedUntil = index;
 
+            if (TryEmitStructuredLoop(instruction, index, endIndex, indentLevel, out consumedUntil))
+            {
+                index = consumedUntil - 1;
+                continue;
+            }
+
+            if (TryEmitStructuredIfFromLocalTemp(index, endIndex, indentLevel, out consumedUntil))
+            {
+                index = consumedUntil - 1;
+                continue;
+            }
+
             if (TryEmitStructuredIf(instruction, index, endIndex, indentLevel, out consumedUntil))
             {
                 index = consumedUntil - 1;
@@ -51,6 +63,50 @@ internal sealed partial class IlMethodTranslator
         var positiveCondition = branch.OpCode.Code is Code.Brfalse or Code.Brfalse_S ? Pop().Code : NegateCondition(Pop().Code);
         positiveCondition = ExtendConditionChain(positiveCondition, ref bodyStartIndex, targetIndex, endIndex);
         return TryEmitStructuredConditionalBlock(positiveCondition, bodyStartIndex, targetIndex, endIndex, indentLevel, out consumedUntil);
+    }
+
+    private bool TryEmitStructuredLoop(Instruction instruction, int index, int endIndex, int indentLevel, out int consumedUntil)
+    {
+        consumedUntil = index;
+        if (instruction.OpCode.Code is not (Code.Br or Code.Br_S))
+            return false;
+
+        if (!TryGetBranchTargetIndex(instruction, index, endIndex, out var conditionStartIndex))
+            return false;
+
+        var bodyStartIndex = index + 1;
+        if (bodyStartIndex >= conditionStartIndex)
+            return false;
+
+        if (!TryBuildLoopCondition(conditionStartIndex, bodyStartIndex, endIndex, out var conditionExpression, out var loopBranchIndex))
+            return false;
+
+        var incrementStartIndex = FindLoopIncrementStart(bodyStartIndex, conditionStartIndex);
+        var continueTargetIndex = incrementStartIndex < conditionStartIndex ? incrementStartIndex : conditionStartIndex;
+        var continueLabel = $"loop_continue_{_loopLabelCounter++}";
+
+        AppendLine(indentLevel, "while (true) {");
+        AppendLine(indentLevel + 1, $"if (!({conditionExpression})) {{");
+        AppendLine(indentLevel + 2, "break;");
+        AppendLine(indentLevel + 1, "}");
+
+        _continueLabelScopes.Push(new Dictionary<int, string> { [continueTargetIndex] = continueLabel, [conditionStartIndex] = continueLabel });
+        _breakTargetScopes.Push(new HashSet<int> { loopBranchIndex + 1 });
+        try
+        {
+            TranslateRange(bodyStartIndex, incrementStartIndex, indentLevel + 1);
+            AppendLine(indentLevel + 1, $"{continueLabel}:;");
+            TranslateRange(incrementStartIndex, conditionStartIndex, indentLevel + 1);
+        }
+        finally
+        {
+            _breakTargetScopes.Pop();
+            _continueLabelScopes.Pop();
+        }
+
+        AppendLine(indentLevel, "}");
+        consumedUntil = loopBranchIndex + 1;
+        return true;
     }
 
     private bool TryEmitStructuredIf(Instruction instruction, int index, int endIndex, int indentLevel, out int consumedUntil)
@@ -160,6 +216,20 @@ internal sealed partial class IlMethodTranslator
         };
     }
 
+    private static string BuildLoopConditionForCompareBranch(Code opcode, string left, string right)
+    {
+        return opcode switch
+        {
+            Code.Beq or Code.Beq_S => $"({left} == {right})",
+            Code.Bne_Un or Code.Bne_Un_S => $"({left} != {right})",
+            Code.Bge or Code.Bge_S or Code.Bge_Un or Code.Bge_Un_S => $"({left} >= {right})",
+            Code.Bgt or Code.Bgt_S or Code.Bgt_Un or Code.Bgt_Un_S => $"({left} > {right})",
+            Code.Ble or Code.Ble_S or Code.Ble_Un or Code.Ble_Un_S => $"({left} <= {right})",
+            Code.Blt or Code.Blt_S or Code.Blt_Un or Code.Blt_Un_S => $"({left} < {right})",
+            _ => throw new NotSupportedException($"Unsupported loop compare branch opcode {opcode}"),
+        };
+    }
+
     private string ExtendConditionChain(string initialCondition, ref int bodyStartIndex, int targetIndex, int endIndex)
     {
         var conditions = new List<string> { initialCondition };
@@ -258,6 +328,155 @@ internal sealed partial class IlMethodTranslator
             default:
                 return false;
         }
+    }
+
+    private bool TryBuildLoopCondition(int conditionStartIndex, int bodyStartIndex, int endIndex, out string conditionExpression, out int loopBranchIndex)
+    {
+        conditionExpression = "";
+        loopBranchIndex = -1;
+        var snapshot = CaptureSnapshot();
+        var initialLineCount = Statements.Count;
+
+        try
+        {
+            for (var index = conditionStartIndex; index < endIndex; index++)
+            {
+                var instruction = _instructions[index];
+                if (TryReadLoopBackConditionFromLocalTemp(index, bodyStartIndex, endIndex, out conditionExpression))
+                {
+                    if (Statements.Count != initialLineCount)
+                        return false;
+
+                    loopBranchIndex = index + 2;
+                    return true;
+                }
+
+                if (IsLoopBackBranch(instruction, bodyStartIndex, endIndex, out conditionExpression))
+                {
+                    if (Statements.Count != initialLineCount)
+                        return false;
+
+                    loopBranchIndex = index;
+                    return true;
+                }
+
+                EmitInstruction(instruction, 0);
+                if (Statements.Count != initialLineCount)
+                    return false;
+            }
+
+            return false;
+        }
+        finally
+        {
+            RestoreSnapshot(snapshot);
+        }
+    }
+
+    private bool IsLoopBackBranch(Instruction instruction, int bodyStartIndex, int endIndex, out string conditionExpression)
+    {
+        conditionExpression = "";
+        if (instruction.Operand is not Instruction targetInstruction)
+            return false;
+
+        if (!_instructionIndices.TryGetValue(targetInstruction, out var targetIndex) || targetIndex != bodyStartIndex)
+            return false;
+
+        switch (instruction.OpCode.Code)
+        {
+            case Code.Brtrue:
+            case Code.Brtrue_S:
+                conditionExpression = Pop().Code;
+                return true;
+            case Code.Brfalse:
+            case Code.Brfalse_S:
+                conditionExpression = NegateCondition(Pop().Code);
+                return true;
+            case Code.Beq:
+            case Code.Beq_S:
+            case Code.Bne_Un:
+            case Code.Bne_Un_S:
+            case Code.Bge:
+            case Code.Bge_S:
+            case Code.Bge_Un:
+            case Code.Bge_Un_S:
+            case Code.Bgt:
+            case Code.Bgt_S:
+            case Code.Bgt_Un:
+            case Code.Bgt_Un_S:
+            case Code.Ble:
+            case Code.Ble_S:
+            case Code.Ble_Un:
+            case Code.Ble_Un_S:
+            case Code.Blt:
+            case Code.Blt_S:
+            case Code.Blt_Un:
+            case Code.Blt_Un_S:
+            {
+                var right = Pop();
+                var left = Pop();
+                conditionExpression = BuildLoopConditionForCompareBranch(instruction.OpCode.Code, left.Code, right.Code);
+                return true;
+            }
+            default:
+                return false;
+        }
+    }
+
+    private bool TryReadLoopBackConditionFromLocalTemp(int index, int bodyStartIndex, int endIndex, out string conditionExpression)
+    {
+        conditionExpression = "";
+        if (index + 2 >= endIndex)
+            return false;
+
+        if (!TryGetLocalIndex(_instructions[index], out var storedLocalIndex))
+            return false;
+
+        if (!TryGetLoadedLocalIndex(_instructions[index + 1], out var loadedLocalIndex) || loadedLocalIndex != storedLocalIndex)
+            return false;
+
+        if (_instructions[index + 2].Operand is not Instruction targetInstruction)
+            return false;
+
+        if (!_instructionIndices.TryGetValue(targetInstruction, out var targetIndex) || targetIndex != bodyStartIndex)
+            return false;
+
+        if (_instructions[index + 2].OpCode.Code is not (Code.Brtrue or Code.Brtrue_S or Code.Brfalse or Code.Brfalse_S))
+            return false;
+
+        conditionExpression = Pop().Code;
+        if (_instructions[index + 2].OpCode.Code is Code.Brfalse or Code.Brfalse_S)
+            conditionExpression = NegateCondition(conditionExpression);
+
+        return true;
+    }
+
+    private int FindLoopIncrementStart(int bodyStartIndex, int conditionStartIndex)
+    {
+        var incrementStartIndex = conditionStartIndex;
+        for (var index = bodyStartIndex; index < conditionStartIndex; index++)
+        {
+            var instruction = _instructions[index];
+            if (instruction.OpCode.Code is not (Code.Br or Code.Br_S))
+                continue;
+
+            if (instruction.Operand is not Instruction targetInstruction)
+                continue;
+
+            if (!_instructionIndices.TryGetValue(targetInstruction, out var targetIndex))
+                continue;
+
+            if (targetIndex <= bodyStartIndex || targetIndex >= conditionStartIndex)
+                continue;
+
+            if (targetIndex > incrementStartIndex)
+                continue;
+
+            if (incrementStartIndex == conditionStartIndex || targetIndex > incrementStartIndex)
+                incrementStartIndex = targetIndex;
+        }
+
+        return incrementStartIndex;
     }
 
     private bool TryGetElseBranch(int bodyStartIndex, int bodyEndIndex, int endIndex, out int thenEndIndex, out int elseEndIndex)

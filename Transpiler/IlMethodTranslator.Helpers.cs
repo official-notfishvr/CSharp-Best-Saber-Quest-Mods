@@ -133,13 +133,7 @@ internal sealed partial class IlMethodTranslator
 
     private static bool ShouldPredeclareLocal(TypeReference? type)
     {
-        if (type == null)
-            return true;
-
-        if (!IsValueType(type))
-            return true;
-
-        return ShouldValueInitializeLocal(type);
+        return true;
     }
 
     private static bool TryGetLocalIndex(Instruction instruction, out int localIndex)

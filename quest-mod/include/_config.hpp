@@ -6,6 +6,6 @@
 #include "beatsaber-hook/shared/utils/il2cpp-utils.hpp"
 
 static bool Enabled = true;
-static int32_t PauseBinding = 4;
-static float TriggerThreshold = 0.75;
-static float ThumbstickThreshold = 0.85;
+static bool SnapToBookmarks = true;
+static float SnapWindowSeconds = 0.75;
+static ::StringW BookmarkPrefix = il2cpp_utils::newcsstr("Bookmark: ");

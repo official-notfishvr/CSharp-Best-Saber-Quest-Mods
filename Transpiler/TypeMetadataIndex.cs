@@ -39,12 +39,31 @@ internal sealed class TypeMetadataIndex
             return null;
 
         var candidateName = accessorName.Substring(4);
-        var property = type.Properties.FirstOrDefault(item => string.Equals(item.Name, candidateName, StringComparison.Ordinal) && ((accessorName.StartsWith("get_", StringComparison.Ordinal) && item.HasGetter) || (accessorName.StartsWith("set_", StringComparison.Ordinal) && item.HasSetter)));
+        var property = type.Properties.FirstOrDefault(item =>
+            string.Equals(item.Name, candidateName, StringComparison.OrdinalIgnoreCase) &&
+            ((accessorName.StartsWith("get_", StringComparison.Ordinal) && item.HasGetter) || (accessorName.StartsWith("set_", StringComparison.Ordinal) && item.HasSetter)));
 
         if (property == null)
             return null;
 
         return property.Name;
+    }
+
+    public string? ResolveMethodName(string declaringTypeFullName, string methodName, int parameterCount)
+    {
+        if (!_types.TryGetValue(declaringTypeFullName, out var type))
+            return null;
+
+        var method = type.Methods.FirstOrDefault(item =>
+            string.Equals(item.Name, methodName, StringComparison.Ordinal) &&
+            item.Parameters.Count == parameterCount);
+        if (method != null)
+            return method.Name;
+
+        method = type.Methods.FirstOrDefault(item =>
+            string.Equals(item.Name, methodName, StringComparison.OrdinalIgnoreCase) &&
+            item.Parameters.Count == parameterCount);
+        return method?.Name;
     }
 
     public string? ResolveFieldStorageName(string declaringTypeFullName, string fieldName)
@@ -114,6 +133,7 @@ internal sealed class GeneratedTypeMetadataRecord
     public bool IsValueType { get; set; }
     public List<GeneratedPropertyMetadataRecord> Properties { get; set; } = new();
     public List<GeneratedFieldMetadataRecord> Fields { get; set; } = new();
+    public List<GeneratedMethodMetadataRecord> Methods { get; set; } = new();
 }
 
 internal sealed class GeneratedPropertyMetadataRecord
@@ -129,4 +149,17 @@ internal sealed class GeneratedFieldMetadataRecord
     public string Name { get; set; } = "";
     public string Type { get; set; } = "";
     public bool IsStatic { get; set; }
+}
+
+internal sealed class GeneratedMethodMetadataRecord
+{
+    public string Name { get; set; } = "";
+    public bool IsStatic { get; set; }
+    public List<GeneratedMethodParameterMetadataRecord> Parameters { get; set; } = new();
+}
+
+internal sealed class GeneratedMethodParameterMetadataRecord
+{
+    public string Name { get; set; } = "";
+    public string Type { get; set; } = "";
 }

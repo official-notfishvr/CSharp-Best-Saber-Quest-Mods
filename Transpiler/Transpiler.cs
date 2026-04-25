@@ -11,11 +11,13 @@ namespace Transpiler;
 internal sealed class Transpiler
 {
     private sealed record HookEmission(HookDefinition Hook, HookDefinition? PrefixHook, HookDefinition? PostfixHook, IlMethodTranslator? FullBody, IlMethodTranslator? PrefixBody, IlMethodTranslator? PostfixBody);
+    private sealed record HelperMethodEmission(MethodDefinition Method, string FunctionName, IlMethodTranslator Body);
 
     private readonly string _assemblyPath;
     private readonly List<HookDefinition> _hooks = new();
     private readonly List<ConfigEntry> _configValues = new();
     private readonly List<LocalStaticFieldEntry> _localStaticFields = new();
+    private readonly List<MethodDefinition> _helperMethods = new();
     private readonly CppTypeSystem _typeSystem = new();
     private readonly TypeMetadataIndex _metadataIndex;
     private ModuleDefinition? _module;
@@ -68,6 +70,7 @@ internal sealed class Transpiler
         LoadConfigs(type);
         LoadLocalStaticFields(type);
         LoadHooks(type);
+        LoadHelperMethods(type);
 
         foreach (var nestedType in type.NestedTypes)
             ProcessType(nestedType);
@@ -295,7 +298,9 @@ internal sealed class Transpiler
 
     private void GenerateMainSource(string outputDirectory)
     {
-        var bodyGenerators = _hooks.ToDictionary(hook => hook, hook => new IlMethodTranslator(hook, _typeSystem, _configValues, _localStaticFields, _metadataIndex));
+        var localMethodNames = _helperMethods.ToDictionary(method => method.FullName, GetHelperFunctionName, StringComparer.Ordinal);
+        var helperMethodEmissions = BuildHelperMethodEmissions(localMethodNames);
+        var bodyGenerators = _hooks.ToDictionary(hook => hook, hook => new IlMethodTranslator(hook, _typeSystem, _configValues, _localStaticFields, _metadataIndex, localMethodNames));
 
         foreach (var generator in bodyGenerators.Values)
             generator.Translate();
@@ -312,9 +317,25 @@ internal sealed class Transpiler
                 AddInclude(includeSet, include);
         }
 
+        foreach (var helperMethod in _helperMethods)
+        {
+            AddInclude(includeSet, _typeSystem.GetIncludePath(helperMethod.ReturnType));
+            foreach (var parameter in helperMethod.Parameters)
+                AddInclude(includeSet, _typeSystem.GetIncludePath(parameter.ParameterType));
+
+            foreach (var include in CollectBodyIncludes(helperMethod))
+                AddInclude(includeSet, include);
+        }
+
         foreach (var generator in bodyGenerators.Values)
         {
             foreach (var include in generator.RequiredIncludes)
+                includeSet.Add(include);
+        }
+
+        foreach (var helperMethod in helperMethodEmissions)
+        {
+            foreach (var include in helperMethod.Body.RequiredIncludes)
                 includeSet.Add(include);
         }
 
@@ -351,6 +372,15 @@ internal sealed class Transpiler
         writer.WriteLine("}");
         writer.WriteLine();
 
+        foreach (var helperMethod in helperMethodEmissions)
+            WriteHelperPrototype(writer, helperMethod);
+
+        if (helperMethodEmissions.Count > 0)
+            writer.WriteLine();
+
+        foreach (var helperMethod in helperMethodEmissions)
+            WriteHelperFunction(writer, helperMethod);
+
         foreach (var emission in hookEmissions)
         {
             if (emission.FullBody != null)
@@ -374,7 +404,7 @@ internal sealed class Transpiler
         writer.WriteLine("    PaperLogger.info(\"Installed all hooks!\");");
         writer.WriteLine("}");
 
-        WriteOutputFile(outputDirectory, Path.Combine("src", "main.cpp"), writer.ToString());
+        WriteOutputFile(outputDirectory, Path.Combine("src", "main.cpp"), NormalizeGeneratedSource(writer.ToString()));
     }
 
     private void WriteHook(CppCodeWriter writer, HookDefinition hook, IlMethodTranslator bodyGenerator)
@@ -450,6 +480,24 @@ internal sealed class Transpiler
         writer.WriteLine();
     }
 
+    private void WriteHelperPrototype(CppCodeWriter writer, HelperMethodEmission helperMethod)
+    {
+        var returnType = _typeSystem.MapType(helperMethod.Method.ReturnType);
+        var parameters = helperMethod.Method.Parameters.Select(parameter => $"{_typeSystem.MapType(parameter.ParameterType)} {CppIdentifier.Sanitize(parameter.Name)}").ToList();
+        writer.WriteLine($"static {returnType} {helperMethod.FunctionName}({string.Join(", ", parameters)});");
+    }
+
+    private void WriteHelperFunction(CppCodeWriter writer, HelperMethodEmission helperMethod)
+    {
+        var returnType = _typeSystem.MapType(helperMethod.Method.ReturnType);
+        var parameters = helperMethod.Method.Parameters.Select(parameter => $"{_typeSystem.MapType(parameter.ParameterType)} {CppIdentifier.Sanitize(parameter.Name)}").ToList();
+        writer.WriteLine($"static {returnType} {helperMethod.FunctionName}({string.Join(", ", parameters)}) {{");
+        foreach (var line in helperMethod.Body.Statements)
+            writer.WriteLine($"    {line}");
+        writer.WriteLine("}");
+        writer.WriteLine();
+    }
+
     private void WriteOutputFile(string outputDirectory, string relativePath, string content)
     {
         var fullPath = Path.Combine(outputDirectory, relativePath);
@@ -520,6 +568,23 @@ internal sealed class Transpiler
                     DefaultValueCpp = defaultValueCpp,
                 }
             );
+        }
+    }
+
+    private void LoadHelperMethods(TypeDefinition type)
+    {
+        if (!type.Methods.Any(method => method.CustomAttributes.Any(IsHookAttribute)))
+            return;
+
+        foreach (var method in type.Methods)
+        {
+            if (!method.IsStatic || !method.HasBody || method.IsConstructor || method.IsGetter || method.IsSetter)
+                continue;
+
+            if (method.CustomAttributes.Any(IsHookAttribute))
+                continue;
+
+            _helperMethods.Add(method);
         }
     }
 
@@ -692,6 +757,14 @@ internal sealed class Transpiler
         return CppIdentifier.Sanitize(hook.Method.Name, "HookHelper");
     }
 
+    private static string GetHelperFunctionName(MethodDefinition method)
+    {
+        var typeToken = CppIdentifier.Sanitize(method.DeclaringType.FullName, "Type");
+        var methodToken = CppIdentifier.Sanitize(method.Name, "Helper");
+        var signatureToken = BuildSignatureToken(method.Parameters.Select(parameter => parameter.ParameterType));
+        return signatureToken.Length == 0 ? $"{typeToken}_{methodToken}" : $"{typeToken}_{methodToken}_{signatureToken}";
+    }
+
     private List<HookEmission> BuildHookEmissions(Dictionary<HookDefinition, IlMethodTranslator> bodyGenerators)
     {
         var orderedHooks = _hooks.Select((hook, index) => (hook, index)).ToList();
@@ -739,6 +812,57 @@ internal sealed class Transpiler
         }
 
         return emissions;
+    }
+
+    private List<HelperMethodEmission> BuildHelperMethodEmissions(IReadOnlyDictionary<string, string> localMethodNames)
+    {
+        var result = new List<HelperMethodEmission>();
+        foreach (var method in _helperMethods)
+        {
+            var functionName = localMethodNames[method.FullName];
+            var syntheticHook = new HookDefinition
+            {
+                HookName = functionName,
+                TargetMethod = method.Name,
+                TargetType = method.DeclaringType,
+                Method = method,
+                IsConstructor = false,
+                Phase = HookPhase.Full,
+            };
+
+            var translator = new IlMethodTranslator(syntheticHook, _typeSystem, _configValues, _localStaticFields, _metadataIndex, localMethodNames);
+            translator.TranslateUnstructured();
+            result.Add(new HelperMethodEmission(method, functionName, translator));
+        }
+
+        return result;
+    }
+
+    private static string NormalizeGeneratedSource(string source)
+    {
+        var lines = source.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var marker = " = ::il2cpp_utils::NewSpecific<";
+            var markerIndex = lines[i].IndexOf(marker, StringComparison.Ordinal);
+            if (markerIndex < 0)
+                continue;
+
+            var lhs = lines[i][..markerIndex].Trim();
+            var callStart = lines[i].LastIndexOf('(');
+            var callEnd = lines[i].LastIndexOf(");", StringComparison.Ordinal);
+            if (callStart < 0 || callEnd < callStart)
+                continue;
+
+            var args = lines[i][(callStart + 1)..callEnd].Trim();
+            if (string.Equals(args, lhs, StringComparison.Ordinal))
+                args = string.Empty;
+            var indentLength = lines[i].Length - lines[i].TrimStart().Length;
+            var indent = lines[i][..indentLength];
+            lines[i] = $"{indent}{lhs} = ::il2cpp_utils::NewSpecific<decltype({lhs})>({args});";
+        }
+
+        return string.Join(Environment.NewLine, lines);
     }
 
     private static string BuildHookGroupKey(HookDefinition hook)

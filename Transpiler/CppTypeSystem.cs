@@ -22,7 +22,7 @@ internal sealed class CppTypeSystem
         ["System.Single"] = "float",
         ["System.Double"] = "double",
         ["System.Char"] = "Il2CppChar",
-        ["System.String"] = "Il2CppString*",
+        ["System.String"] = "::StringW",
         ["System.Object"] = "Il2CppObject*",
         ["System.IntPtr"] = "void*",
         ["System.UIntPtr"] = "void*",
@@ -75,7 +75,7 @@ internal sealed class CppTypeSystem
         TypeReference? current = type;
         while (current != null)
         {
-            names.Push(StripArity(current.Name));
+            names.Push(FormatTypeName(current.Name));
             current = current.DeclaringType;
         }
 
@@ -88,6 +88,9 @@ internal sealed class CppTypeSystem
             return null;
 
         var normalized = Normalize(type);
+        if (normalized.FullName == "System.String")
+            return "System/String.hpp";
+
         if (PrimitiveTypes.ContainsKey(normalized.FullName))
             return null;
         if (normalized is GenericParameter)
@@ -137,7 +140,7 @@ internal sealed class CppTypeSystem
     public string MapArrayElementTypeName(TypeReference elementType)
     {
         var elementFullName = Normalize(elementType).FullName;
-        return PrimitiveTypes.TryGetValue(elementFullName, out var mapped) ? mapped.TrimEnd('*') : "Il2CppObject*";
+        return PrimitiveTypes.TryGetValue(elementFullName, out var mapped) ? mapped : "Il2CppObject*";
     }
 
     private static TypeReference Normalize(TypeReference type)
@@ -161,10 +164,20 @@ internal sealed class CppTypeSystem
         TypeReference? current = type;
         while (current != null)
         {
-            names.Push(StripArity(current.Name));
+            names.Push(FormatTypeName(current.Name));
             current = current.DeclaringType;
         }
 
         return string.Join("/", names);
+    }
+
+    private static string FormatTypeName(string name)
+    {
+        var backtickIndex = name.IndexOf('`');
+        if (backtickIndex < 0)
+            return name;
+
+        var arityPart = name[(backtickIndex + 1)..];
+        return int.TryParse(arityPart, out var arity) ? $"{name[..backtickIndex]}_{arity}" : name[..backtickIndex];
     }
 }

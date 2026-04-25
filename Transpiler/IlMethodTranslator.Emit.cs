@@ -159,12 +159,78 @@ internal sealed partial class IlMethodTranslator
             case Code.Newobj:
                 EmitNewObject((MethodReference)instruction.Operand);
                 return;
+            case Code.Brfalse:
+            case Code.Brfalse_S:
+                if (_useGotoFlow)
+                {
+                    AppendConditionalGoto((Instruction)instruction.Operand, NegateCondition(Pop().Code), indentLevel);
+                    return;
+                }
+                break;
+            case Code.Brtrue:
+            case Code.Brtrue_S:
+                if (_useGotoFlow)
+                {
+                    AppendConditionalGoto((Instruction)instruction.Operand, Pop().Code, indentLevel);
+                    return;
+                }
+                break;
+            case Code.Beq:
+            case Code.Beq_S:
+            case Code.Bne_Un:
+            case Code.Bne_Un_S:
+            case Code.Bge:
+            case Code.Bge_S:
+            case Code.Bge_Un:
+            case Code.Bge_Un_S:
+            case Code.Bgt:
+            case Code.Bgt_S:
+            case Code.Bgt_Un:
+            case Code.Bgt_Un_S:
+            case Code.Ble:
+            case Code.Ble_S:
+            case Code.Ble_Un:
+            case Code.Ble_Un_S:
+            case Code.Blt:
+            case Code.Blt_S:
+            case Code.Blt_Un:
+            case Code.Blt_Un_S:
+                if (_useGotoFlow)
+                {
+                    AppendCompareGoto(instruction.OpCode.Code, (Instruction)instruction.Operand, indentLevel);
+                    return;
+                }
+                break;
             case Code.Br:
             case Code.Br_S:
             case Code.Leave:
             case Code.Leave_S:
             {
                 var target = (Instruction)instruction.Operand;
+                if (_useGotoFlow)
+                {
+                    if (_gotoLabels != null && _instructionIndices.TryGetValue(target, out var gotoTargetIndex) && _gotoLabels.TryGetValue(gotoTargetIndex, out var gotoLabel))
+                    {
+                        AppendLine(indentLevel, $"goto {gotoLabel};");
+                        return;
+                    }
+                }
+
+                if (_instructionIndices.TryGetValue(target, out var branchTargetIndex))
+                {
+                    if (TryGetContinueLabel(branchTargetIndex, out var continueLabel))
+                    {
+                        AppendLine(indentLevel, $"goto {continueLabel};");
+                        return;
+                    }
+
+                    if (IsLoopBreakTarget(branchTargetIndex))
+                    {
+                        AppendLine(indentLevel, "break;");
+                        return;
+                    }
+                }
+
                 if (TryBuildReturnFromBranchTarget(target, out var returnExpression))
                 {
                     AppendLine(indentLevel, $"return {returnExpression};");
@@ -173,7 +239,7 @@ internal sealed partial class IlMethodTranslator
 
                 if (_instructionIndices.TryGetValue(target, out var targetIndex) && targetIndex == _instructions.Count - 1 && _instructions[targetIndex].OpCode.Code == Code.Ret)
                     return;
-                throw new NotSupportedException($"Unsupported non-structured branch in {_method.FullName}");
+                throw new NotSupportedException($"Unsupported non-structured branch in {_method.FullName} (gotoFlow={_useGotoFlow}, targetIndex={( _instructionIndices.TryGetValue(target, out var debugTargetIndex) ? debugTargetIndex : -1)}, hasLabel={(_gotoLabels != null && _instructionIndices.TryGetValue(target, out var labelTargetIndex) && _gotoLabels.ContainsKey(labelTargetIndex))})");
             }
             case Code.Ret:
                 EmitReturn(indentLevel);
@@ -188,6 +254,8 @@ internal sealed partial class IlMethodTranslator
             case Code.Dup:
             {
                 var value = Pop();
+                if (value.HasSideEffects)
+                    value = MaterializeTemporary(value, indentLevel, "dupTemp");
                 _stack.Push(value);
                 _stack.Push(value);
                 return;
@@ -324,9 +392,9 @@ internal sealed partial class IlMethodTranslator
 
     private void StoreLocal(int index, int indentLevel)
     {
-        var value = Pop();
-        var name = GetLocalName(index);
         var variable = _method.Body!.Variables[index];
+        var value = NormalizeAssignedValue(Pop(), variable.VariableType, GetLocalName(index));
+        var name = GetLocalName(index);
 
         if (_declaredLocals.Add(index))
         {
@@ -388,12 +456,14 @@ internal sealed partial class IlMethodTranslator
 
         if (isStatic && _configByField.TryGetValue(BuildConfigAccessorKey(field.DeclaringType.FullName, field.Name), out var config))
         {
+            value = NormalizeAssignedValue(value, field.FieldType, config.CppIdentifier);
             AppendLine(indentLevel, $"{config.CppIdentifier} = {value.Code};");
             return;
         }
 
         if (isStatic && _localStaticFieldsByField.TryGetValue(BuildConfigAccessorKey(field.DeclaringType.FullName, field.Name), out var localStaticField))
         {
+            value = NormalizeAssignedValue(value, field.FieldType, localStaticField.CppIdentifier);
             AppendLine(indentLevel, $"{localStaticField.CppIdentifier} = {value.Code};");
             return;
         }
@@ -401,12 +471,14 @@ internal sealed partial class IlMethodTranslator
         if (isStatic)
         {
             var declaringType = $"{_typeSystem.MapNamespace(field.DeclaringType.Namespace)}::{_typeSystem.ComposeTypeName(field.DeclaringType)}";
+            value = NormalizeAssignedValue(value, field.FieldType, $"{declaringType}::{field.Name}");
             AppendLine(indentLevel, $"{declaringType}::{field.Name} = {value.Code};");
             return;
         }
 
         var target = Pop();
         var fieldName = ResolveInstanceFieldName(field);
+        value = NormalizeAssignedValue(value, field.FieldType, $"{target.Code}{GetMemberAccessOperator(target.Type)}{fieldName}");
         AppendLine(indentLevel, $"{target.Code}{GetMemberAccessOperator(target.Type)}{fieldName} = {value.Code};");
     }
 
@@ -549,6 +621,23 @@ internal sealed partial class IlMethodTranslator
             return;
         }
 
+        if (TryGetLocalMethodName(method, out var localMethodName))
+        {
+            var localCall = $"{localMethodName}({string.Join(", ", args.Select(arg => arg.Code))})";
+            if (method.ReturnType.FullName == "System.Void")
+                AppendLine(indentLevel, $"{localCall};");
+            else
+                _stack.Push(
+                    new CppExpression
+                    {
+                        Code = localCall,
+                        Type = method.ReturnType,
+                        HasSideEffects = true,
+                    }
+                );
+            return;
+        }
+
         if (method.DeclaringType.FullName == "System.Console" && method.Name is "WriteLine" or "Write")
         {
             AppendLine(indentLevel, $"PaperLogger.info({string.Join(", ", args.Select(arg => arg.Code))});");
@@ -586,6 +675,7 @@ internal sealed partial class IlMethodTranslator
     {
         var argumentList = string.Join(", ", args.Select(arg => arg.Code));
         var declaringType = $"{_typeSystem.MapNamespace(method.DeclaringType.Namespace)}::{_typeSystem.ComposeTypeName(method.DeclaringType)}";
+        var emittedMethodName = ResolveMethodName(method);
 
         if (method.Name == ".ctor" && instance != null)
         {
@@ -610,11 +700,14 @@ internal sealed partial class IlMethodTranslator
             };
         }
 
+        if (ShouldUseRuntimeMethodInvocation(method))
+            return BuildRuntimeCallValue(method, instance, args, emittedMethodName);
+
         if (method.Name.StartsWith("get_", StringComparison.Ordinal) || method.Name.StartsWith("set_", StringComparison.Ordinal))
         {
             return new CppExpression
             {
-                Code = instance != null ? $"{instance.Code}{GetMemberAccessOperator(instance.Type)}{method.Name}({argumentList})" : $"{declaringType}::{method.Name}({argumentList})",
+                Code = instance != null ? $"{instance.Code}{GetMemberAccessOperator(instance.Type)}{emittedMethodName}({argumentList})" : $"{declaringType}::{emittedMethodName}({argumentList})",
                 Type = method.ReturnType,
                 PreferAutoDeclaration = method.Name.StartsWith("get_", StringComparison.Ordinal),
                 HasSideEffects = true,
@@ -625,7 +718,7 @@ internal sealed partial class IlMethodTranslator
         {
             return new CppExpression
             {
-                Code = $"{instance.Code}{GetMemberAccessOperator(instance.Type)}{method.Name}({argumentList})",
+                Code = $"{instance.Code}{GetMemberAccessOperator(instance.Type)}{emittedMethodName}({argumentList})",
                 Type = method.ReturnType,
                 PreferAutoDeclaration = true,
                 HasSideEffects = true,
@@ -634,8 +727,40 @@ internal sealed partial class IlMethodTranslator
 
         return new CppExpression
         {
-            Code = $"{declaringType}::{method.Name}({argumentList})",
+            Code = $"{declaringType}::{emittedMethodName}({argumentList})",
             Type = method.ReturnType,
+            HasSideEffects = true,
+        };
+    }
+
+    private CppExpression BuildRuntimeCallValue(MethodReference method, CppExpression? instance, IReadOnlyList<CppExpression> args, string emittedMethodName)
+    {
+        var effectiveReturnType = ResolveEffectiveReturnType(method, instance);
+        var mappedReturnType = _typeSystem.MapType(effectiveReturnType);
+        var argumentList = string.Join(", ", args.Select(arg => arg.Code));
+        string code;
+
+        if (instance != null)
+        {
+            code = args.Count == 0
+                ? $"::il2cpp_utils::RunMethodRethrow<{mappedReturnType}, false>({instance.Code}, \"{emittedMethodName}\")"
+                : $"::il2cpp_utils::RunMethodRethrow<{mappedReturnType}, false>({instance.Code}, \"{emittedMethodName}\", {argumentList})";
+        }
+        else
+        {
+            var runtimeNamespace = method.DeclaringType.Namespace ?? "";
+            var runtimeClassName = GetRuntimeClassName(method.DeclaringType);
+            var classExpression = $"::il2cpp_utils::GetClassFromName(\"{runtimeNamespace}\", \"{runtimeClassName}\")";
+            code = args.Count == 0
+                ? $"::il2cpp_utils::RunMethodRethrow<{mappedReturnType}, false>({classExpression}, \"{emittedMethodName}\")"
+                : $"::il2cpp_utils::RunMethodRethrow<{mappedReturnType}, false>({classExpression}, \"{emittedMethodName}\", {argumentList})";
+        }
+
+        return new CppExpression
+        {
+            Code = code,
+            Type = effectiveReturnType,
+            PreferAutoDeclaration = true,
             HasSideEffects = true,
         };
     }
@@ -674,6 +799,66 @@ internal sealed partial class IlMethodTranslator
 
         propertyName = _metadataIndex.ResolvePropertyName(method.DeclaringType.FullName, method.Name) ?? "";
         return propertyName.Length > 0;
+    }
+
+    private string ResolveMethodName(MethodReference method)
+    {
+        if ((method.Name.StartsWith("get_", StringComparison.Ordinal) || method.Name.StartsWith("set_", StringComparison.Ordinal)) &&
+            TryGetPropertyAccessorName(method, out var propertyName))
+        {
+            return $"{method.Name[..4]}{propertyName}";
+        }
+
+        return _metadataIndex.ResolveMethodName(method.DeclaringType.FullName, method.Name, method.Parameters.Count) ?? method.Name;
+    }
+
+    private bool ShouldUseRuntimeMethodInvocation(MethodReference method)
+    {
+        if (method.Name == ".ctor")
+            return false;
+
+        var declaringType = NormalizeTypeReference(method.DeclaringType);
+        if (declaringType == null)
+            return false;
+
+        var namespaceName = declaringType.Namespace ?? "";
+        if (!(namespaceName.Equals("System", StringComparison.Ordinal) || namespaceName.StartsWith("System.", StringComparison.Ordinal)))
+            return false;
+
+        return !method.HasThis || !IsValueType(declaringType);
+    }
+
+    private string GetRuntimeClassName(TypeReference type)
+    {
+        var names = new Stack<string>();
+        TypeReference? current = type;
+        while (current != null)
+        {
+            names.Push(current.Name.Split('`')[0]);
+            current = current.DeclaringType;
+        }
+
+        return string.Join("/", names);
+    }
+
+    private TypeReference ResolveEffectiveReturnType(MethodReference method, CppExpression? instance)
+    {
+        if (method.Name == "get_Item")
+        {
+            var listInstance = NormalizeTypeReference(instance?.Type) as GenericInstanceType;
+            if (listInstance != null && listInstance.GenericArguments.Count > 0)
+                return listInstance.GenericArguments[0];
+        }
+
+        if (method.ReturnType is not GenericParameter genericParameter)
+            return method.ReturnType;
+
+        var genericInstance = NormalizeTypeReference(method.DeclaringType) as GenericInstanceType
+            ?? NormalizeTypeReference(instance?.Type) as GenericInstanceType;
+        if (genericInstance != null && genericParameter.Position >= 0 && genericParameter.Position < genericInstance.GenericArguments.Count)
+            return genericInstance.GenericArguments[genericParameter.Position];
+
+        return method.ReturnType;
     }
 
     private void EmitReturn(int indentLevel)
@@ -796,16 +981,16 @@ internal sealed partial class IlMethodTranslator
     private CppExpression BuildNewObjectValue(MethodReference constructor, IReadOnlyList<CppExpression> args)
     {
         var declaringType = constructor.DeclaringType;
-        var declaringTypeName = $"{_typeSystem.MapNamespace(declaringType.Namespace)}::{_typeSystem.ComposeTypeName(declaringType)}";
+        var declaringTypeName = _typeSystem.MapType(declaringType).TrimEnd('*');
         var argumentList = string.Join(", ", args.Select(arg => arg.Code));
 
         if (declaringType.IsValueType || declaringType.Resolve()?.IsValueType == true)
         {
             var mappedType = _typeSystem.MapType(declaringType);
-            var ctorBody = args.Count == 0 ? "return value;" : $"value._ctor({argumentList}); return value;";
+            var ctorBody = args.Count == 0 ? "return tmpValue;" : $"tmpValue._ctor({argumentList}); return tmpValue;";
             return new CppExpression
             {
-                Code = $"[&]() {{ {mappedType} value{{}}; {ctorBody} }}()",
+                Code = $"[&]() {{ {mappedType} tmpValue{{}}; {ctorBody} }}()",
                 Type = declaringType,
                 PreferAutoDeclaration = true,
                 HasSideEffects = true,
@@ -866,6 +1051,58 @@ internal sealed partial class IlMethodTranslator
         return true;
     }
 
+    private void AppendConditionalGoto(Instruction targetInstruction, string condition, int indentLevel)
+    {
+        if (_gotoLabels != null && _instructionIndices.TryGetValue(targetInstruction, out var targetIndex) && _gotoLabels.TryGetValue(targetIndex, out var label))
+        {
+            AppendLine(indentLevel, $"if ({condition}) goto {label};");
+            return;
+        }
+
+        throw new NotSupportedException($"Unsupported goto branch target in {_method.FullName}");
+    }
+
+    private void AppendCompareGoto(Code opcode, Instruction targetInstruction, int indentLevel)
+    {
+        var right = Pop();
+        var left = Pop();
+        var condition = opcode switch
+        {
+            Code.Beq or Code.Beq_S => $"({left.Code} == {right.Code})",
+            Code.Bne_Un or Code.Bne_Un_S => $"({left.Code} != {right.Code})",
+            Code.Bge or Code.Bge_S or Code.Bge_Un or Code.Bge_Un_S => $"({left.Code} >= {right.Code})",
+            Code.Bgt or Code.Bgt_S or Code.Bgt_Un or Code.Bgt_Un_S => $"({left.Code} > {right.Code})",
+            Code.Ble or Code.Ble_S or Code.Ble_Un or Code.Ble_Un_S => $"({left.Code} <= {right.Code})",
+            Code.Blt or Code.Blt_S or Code.Blt_Un or Code.Blt_Un_S => $"({left.Code} < {right.Code})",
+            _ => throw new NotSupportedException($"Unsupported compare branch opcode {opcode}"),
+        };
+
+        AppendConditionalGoto(targetInstruction, condition, indentLevel);
+    }
+
+    private bool TryGetContinueLabel(int targetIndex, out string label)
+    {
+        foreach (var scope in _continueLabelScopes)
+        {
+            if (scope.TryGetValue(targetIndex, out label!))
+                return true;
+        }
+
+        label = "";
+        return false;
+    }
+
+    private bool IsLoopBreakTarget(int targetIndex)
+    {
+        foreach (var scope in _breakTargetScopes)
+        {
+            if (scope.Contains(targetIndex))
+                return true;
+        }
+
+        return false;
+    }
+
     private static TypeReference? NormalizeTypeReference(TypeReference? type)
     {
         while (type is OptionalModifierType optionalModifierType)
@@ -878,6 +1115,15 @@ internal sealed partial class IlMethodTranslator
             type = byReferenceType.ElementType;
 
         return type;
+    }
+
+    private bool TryGetLocalMethodName(MethodReference method, out string localMethodName)
+    {
+        var resolvedMethod = method.Resolve();
+        if (resolvedMethod != null && _localMethodNames.TryGetValue(resolvedMethod.FullName, out localMethodName!))
+            return true;
+
+        return _localMethodNames.TryGetValue(method.FullName, out localMethodName!);
     }
 
     private IReadOnlyList<string> ResolveVectorLikeComponentFields(TypeReference argumentType, string declaringTypeFullName)
@@ -915,5 +1161,74 @@ internal sealed partial class IlMethodTranslator
             or MetadataType.UInt64
             or MetadataType.Single
             or MetadataType.Double;
+    }
+
+    private CppExpression MaterializeTemporary(CppExpression value, int indentLevel, string prefix)
+    {
+        var tempName = $"{prefix}{_temporaryCounter++}";
+        var tempType = value.Type == null ? "Il2CppObject*" : _typeSystem.MapType(value.Type);
+        var declaration = ShouldValueInitializeLocal(value.Type) ? $"{tempType} {tempName}{{}};" : $"{tempType} {tempName};";
+        _temporaryDeclarations.Add(declaration);
+        AppendLine(indentLevel, $"{tempName} = {value.Code};");
+        return new CppExpression
+        {
+            Code = tempName,
+            Type = value.Type,
+            PreferAutoDeclaration = true,
+        };
+    }
+
+    private CppExpression NormalizeAssignedValue(CppExpression value, TypeReference targetType, string targetExpression)
+    {
+        var mappedTargetType = _typeSystem.MapType(targetType);
+
+        const string runtimePrefix = "::il2cpp_utils::RunMethodRethrow<Il2CppObject*, false>(";
+        if (value.Code.StartsWith(runtimePrefix, StringComparison.Ordinal) && !string.Equals(mappedTargetType, "Il2CppObject*", StringComparison.Ordinal))
+        {
+            value = new CppExpression
+            {
+                Code = $"::il2cpp_utils::RunMethodRethrow<{mappedTargetType}, false>({value.Code[runtimePrefix.Length..]}",
+                Type = targetType,
+                PreferAutoDeclaration = value.PreferAutoDeclaration,
+                HasSideEffects = value.HasSideEffects,
+            };
+        }
+
+        var newCtorMarker = "::New_ctor(";
+        var newCtorIndex = value.Code.IndexOf(newCtorMarker, StringComparison.Ordinal);
+        if (newCtorIndex >= 0)
+        {
+            var args = value.Code[(newCtorIndex + newCtorMarker.Length)..^1].Trim();
+            if (string.Equals(args, targetExpression, StringComparison.Ordinal))
+                args = string.Empty;
+            value = new CppExpression
+            {
+                Code = $"::il2cpp_utils::NewSpecific<decltype({targetExpression})>({args})",
+                Type = targetType,
+                PreferAutoDeclaration = value.PreferAutoDeclaration,
+                HasSideEffects = value.HasSideEffects,
+            };
+        }
+
+        const string newSpecificPrefix = "::il2cpp_utils::NewSpecific<";
+        if (value.Code.StartsWith(newSpecificPrefix, StringComparison.Ordinal))
+        {
+            var callStart = value.Code.IndexOf('(', newSpecificPrefix.Length);
+            if (callStart >= 0)
+            {
+                var args = value.Code[(callStart + 1)..^1].Trim();
+                if (string.Equals(args, targetExpression, StringComparison.Ordinal))
+                    args = string.Empty;
+                value = new CppExpression
+                {
+                    Code = $"::il2cpp_utils::NewSpecific<decltype({targetExpression})>({args})",
+                    Type = targetType,
+                    PreferAutoDeclaration = value.PreferAutoDeclaration,
+                    HasSideEffects = value.HasSideEffects,
+                };
+            }
+        }
+
+        return value;
     }
 }
