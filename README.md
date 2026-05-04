@@ -11,6 +11,10 @@ what is working?
 - `Transpiler` works for `SampleMod`
 - `TypeGenerator` can emit `GeneratedTypes.cs` plus `GeneratedTypes.metadata.json`
 
+# Ported mods
+
+- PauseKey - https://github.com/dylanhook/PauseKey
+
 ## Credits (Quest C++ modding)
 
 - [zoller27osu](https://github.com/zoller27osu), [Sc2ad](https://github.com/Sc2ad) and [jakibaki](https://github.com/jakibaki) - [beatsaber-hook](https://github.com/sc2ad/beatsaber-hook)

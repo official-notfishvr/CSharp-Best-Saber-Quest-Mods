@@ -80,6 +80,11 @@ internal static class CppLiteral
         return $"il2cpp_utils::newcsstr(\"{Escape(value)}\")";
     }
 
+    public static string CString(string value)
+    {
+        return $"\"{Escape(value)}\"";
+    }
+
     private static string Escape(string value)
     {
         return value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal).Replace("\r", "\\r", StringComparison.Ordinal).Replace("\n", "\\n", StringComparison.Ordinal).Replace("\t", "\\t", StringComparison.Ordinal);

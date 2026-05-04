@@ -1,5 +1,6 @@
 using CoreMod;
 using GlobalNamespace;
+using UnityEngine;
 
 namespace SampleMod;
 
@@ -20,6 +21,16 @@ public static class TestMod
 
     [Config(Description = "Optional status text for level version label")]
     public static string VersionStatusText { get; set; } = "Mod Active";
+
+    [MenuButton("SampleMod", "Open the SampleMod menu")]
+    public static void OpenSampleMenu()
+    {
+    }
+
+    [GameplaySetupTab("SampleMod", MenuType = BsmlMenuType.All)]
+    public static void OnGameplaySetupTabActivate(GameObject root, bool firstActivation)
+    {
+    }
 
     [Hook(typeof(StandardLevelDetailViewController), nameof(StandardLevelDetailViewController.DidActivate), Phase = HookPhase.Prefix)]
     public static void OnLevelScreenActivatePrefix(StandardLevelDetailViewController self, bool firstActivation, bool addedToHierarchy, bool screenSystemEnabling)

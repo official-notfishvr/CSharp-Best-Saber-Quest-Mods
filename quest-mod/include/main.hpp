@@ -11,4 +11,4 @@
 
 Configuration &getConfig();
 
-constexpr auto PaperLogger = Paper::ConstLoggerContext("com.csharp.quest.practicebookmarks");
+constexpr auto PaperLogger = Paper::ConstLoggerContext("com.example.testmod");

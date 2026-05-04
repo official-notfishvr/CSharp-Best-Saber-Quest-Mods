@@ -676,6 +676,13 @@ internal sealed partial class IlMethodTranslator
         var argumentList = string.Join(", ", args.Select(arg => arg.Code));
         var declaringType = $"{_typeSystem.MapNamespace(method.DeclaringType.Namespace)}::{_typeSystem.ComposeTypeName(method.DeclaringType)}";
         var emittedMethodName = ResolveMethodName(method);
+        if (method is GenericInstanceMethod genericMethodNameSource && genericMethodNameSource.GenericArguments.Count > 0)
+        {
+            foreach (var genericArgument in genericMethodNameSource.GenericArguments)
+                RequiredInclude(genericArgument);
+
+            emittedMethodName += $"<{string.Join(", ", genericMethodNameSource.GenericArguments.Select(_typeSystem.MapType))}>";
+        }
 
         if (method.Name == ".ctor" && instance != null)
         {
@@ -695,6 +702,21 @@ internal sealed partial class IlMethodTranslator
             {
                 Code = $"{instance.Code}{GetMemberAccessOperator(instance.Type)}{method.Name}<{_typeSystem.MapType(typeArgument)}>({argumentList})",
                 Type = method.ReturnType,
+                PreferAutoDeclaration = true,
+                HasSideEffects = true,
+            };
+        }
+
+        if (TryGetLocalMethodName(method, out var localMethodName))
+        {
+            var localArgs = new List<string>();
+            if (instance != null)
+                localArgs.Add(instance.Code);
+            localArgs.AddRange(args.Select(arg => arg.Code));
+            return new CppExpression
+            {
+                Code = $"{localMethodName}({string.Join(", ", localArgs)})",
+                Type = ResolveEffectiveReturnType(method, instance),
                 PreferAutoDeclaration = true,
                 HasSideEffects = true,
             };
@@ -1009,6 +1031,9 @@ internal sealed partial class IlMethodTranslator
     private string BuildCastExpression(TypeReference targetType, string operandCode)
     {
         var mappedType = _typeSystem.MapType(targetType);
+        if (mappedType.EndsWith("*", StringComparison.Ordinal) && operandCode.Contains("GetComponent(", StringComparison.Ordinal))
+            return $"reinterpret_cast<{mappedType}>(({operandCode}).ptr())";
+
         return mappedType.EndsWith("*", StringComparison.Ordinal) || mappedType.EndsWith("&", StringComparison.Ordinal) ? $"reinterpret_cast<{mappedType}>({operandCode})" : $"static_cast<{mappedType}>({operandCode})";
     }
 

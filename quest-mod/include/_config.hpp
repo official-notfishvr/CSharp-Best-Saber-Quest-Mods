@@ -6,6 +6,7 @@
 #include "beatsaber-hook/shared/utils/il2cpp-utils.hpp"
 
 static bool Enabled = true;
-static bool SnapToBookmarks = true;
-static float SnapWindowSeconds = 0.75;
-static ::StringW BookmarkPrefix = il2cpp_utils::newcsstr("Bookmark: ");
+static ::StringW ButtonText = il2cpp_utils::newcsstr("Skill Issue");
+static ::StringW PrefixSuffix = il2cpp_utils::newcsstr(" [pre]");
+static ::StringW PostfixSuffix = il2cpp_utils::newcsstr(" [post]");
+static ::StringW VersionStatusText = il2cpp_utils::newcsstr("Mod Active");

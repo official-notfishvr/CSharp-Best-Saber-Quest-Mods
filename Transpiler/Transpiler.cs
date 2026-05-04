@@ -12,12 +12,16 @@ internal sealed class Transpiler
 {
     private sealed record HookEmission(HookDefinition Hook, HookDefinition? PrefixHook, HookDefinition? PostfixHook, IlMethodTranslator? FullBody, IlMethodTranslator? PrefixBody, IlMethodTranslator? PostfixBody);
     private sealed record HelperMethodEmission(MethodDefinition Method, string FunctionName, IlMethodTranslator Body);
+    private sealed record MenuButtonRegistration(MethodDefinition Method, string Text, string HoverHint);
+    private sealed record GameplaySetupTabRegistration(MethodDefinition Method, string Name, int MenuTypeValue);
 
     private readonly string _assemblyPath;
     private readonly List<HookDefinition> _hooks = new();
     private readonly List<ConfigEntry> _configValues = new();
     private readonly List<LocalStaticFieldEntry> _localStaticFields = new();
     private readonly List<MethodDefinition> _helperMethods = new();
+    private readonly List<MenuButtonRegistration> _menuButtons = new();
+    private readonly List<GameplaySetupTabRegistration> _gameplaySetupTabs = new();
     private readonly CppTypeSystem _typeSystem = new();
     private readonly TypeMetadataIndex _metadataIndex;
     private ModuleDefinition? _module;
@@ -70,6 +74,7 @@ internal sealed class Transpiler
         LoadConfigs(type);
         LoadLocalStaticFields(type);
         LoadHooks(type);
+        LoadBsmlRegistrations(type);
         LoadHelperMethods(type);
 
         foreach (var nestedType in type.NestedTypes)
@@ -303,7 +308,7 @@ internal sealed class Transpiler
         var bodyGenerators = _hooks.ToDictionary(hook => hook, hook => new IlMethodTranslator(hook, _typeSystem, _configValues, _localStaticFields, _metadataIndex, localMethodNames));
 
         foreach (var generator in bodyGenerators.Values)
-            generator.Translate();
+            generator.TranslateUnstructured();
 
         var includeSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -338,6 +343,9 @@ internal sealed class Transpiler
             foreach (var include in helperMethod.Body.RequiredIncludes)
                 includeSet.Add(include);
         }
+
+        if (_menuButtons.Count > 0 || _gameplaySetupTabs.Count > 0)
+            includeSet.Add("bsml/shared/BSML.hpp");
 
         foreach (var localInclude in CollectCurrentModuleIncludePaths())
             includeSet.Remove(localInclude);
@@ -394,6 +402,20 @@ internal sealed class Transpiler
 
         writer.WriteLine("MOD_EXTERN_FUNC void late_load() noexcept {");
         writer.WriteLine("    il2cpp_functions::Init();");
+
+        if (_menuButtons.Count > 0 || _gameplaySetupTabs.Count > 0)
+        {
+            writer.WriteLine("    BSML::Init();");
+
+            foreach (var menuButton in _menuButtons)
+                writer.WriteLine($"    BSML::Register::RegisterMenuButton({CppLiteral.CString(menuButton.Text)}, {CppLiteral.CString(menuButton.HoverHint)}, {GetHelperFunctionName(menuButton.Method)});");
+
+            foreach (var gameplaySetupTab in _gameplaySetupTabs)
+                writer.WriteLine($"    BSML::Register::RegisterGameplaySetupTab({CppLiteral.CString(gameplaySetupTab.Name)}, {GetHelperFunctionName(gameplaySetupTab.Method)}, {MapBsmlMenuType(gameplaySetupTab.MenuTypeValue)});");
+
+            writer.WriteLine();
+        }
+
         writer.WriteLine("    PaperLogger.info(\"Installing hooks...\");");
         writer.WriteLine();
 
@@ -405,6 +427,20 @@ internal sealed class Transpiler
         writer.WriteLine("}");
 
         WriteOutputFile(outputDirectory, Path.Combine("src", "main.cpp"), NormalizeGeneratedSource(writer.ToString()));
+    }
+
+    private static string MapBsmlMenuType(int value)
+    {
+        return value switch
+        {
+            0 => "BSML::MenuType::None",
+            1 => "BSML::MenuType::Solo",
+            2 => "BSML::MenuType::Online",
+            4 => "BSML::MenuType::Campaign",
+            8 => "BSML::MenuType::Custom",
+            15 => "BSML::MenuType::All",
+            _ => $"static_cast<BSML::MenuType>({value})",
+        };
     }
 
     private void WriteHook(CppCodeWriter writer, HookDefinition hook, IlMethodTranslator bodyGenerator)
@@ -518,6 +554,10 @@ internal sealed class Transpiler
 
     private static bool IsConfigAttribute(CustomAttribute attribute) => attribute.AttributeType.Name is "ConfigAttribute" or "Config";
 
+    private static bool IsMenuButtonAttribute(CustomAttribute attribute) => attribute.AttributeType.Name is "MenuButtonAttribute" or "MenuButton";
+
+    private static bool IsGameplaySetupTabAttribute(CustomAttribute attribute) => attribute.AttributeType.Name is "GameplaySetupTabAttribute" or "GameplaySetupTab";
+
     private static string? ReadNamedAttributeString(CustomAttribute attribute, string name)
     {
         foreach (var property in attribute.Properties)
@@ -571,9 +611,37 @@ internal sealed class Transpiler
         }
     }
 
+    private void LoadBsmlRegistrations(TypeDefinition type)
+    {
+        foreach (var method in type.Methods)
+        {
+            foreach (var attribute in method.CustomAttributes.Where(IsMenuButtonAttribute))
+            {
+                ValidateMenuButtonMethod(method);
+                _menuButtons.Add(
+                    new MenuButtonRegistration(
+                        method,
+                        attribute.ConstructorArguments.Count > 0 ? attribute.ConstructorArguments[0].Value?.ToString() ?? "" : "",
+                        attribute.ConstructorArguments.Count > 1 ? attribute.ConstructorArguments[1].Value?.ToString() ?? "" : ""));
+                AddHelperMethod(method);
+            }
+
+            foreach (var attribute in method.CustomAttributes.Where(IsGameplaySetupTabAttribute))
+            {
+                ValidateGameplaySetupTabMethod(method);
+                _gameplaySetupTabs.Add(
+                    new GameplaySetupTabRegistration(
+                        method,
+                        attribute.ConstructorArguments.Count > 0 ? attribute.ConstructorArguments[0].Value?.ToString() ?? "" : "",
+                        ReadNamedAttributeInt32(attribute, "MenuType", 15)));
+                AddHelperMethod(method);
+            }
+        }
+    }
+
     private void LoadHelperMethods(TypeDefinition type)
     {
-        if (!type.Methods.Any(method => method.CustomAttributes.Any(IsHookAttribute)))
+        if (!type.Methods.Any(method => method.CustomAttributes.Any(IsHookAttribute) || method.CustomAttributes.Any(IsMenuButtonAttribute) || method.CustomAttributes.Any(IsGameplaySetupTabAttribute)))
             return;
 
         foreach (var method in type.Methods)
@@ -584,7 +652,34 @@ internal sealed class Transpiler
             if (method.CustomAttributes.Any(IsHookAttribute))
                 continue;
 
-            _helperMethods.Add(method);
+            AddHelperMethod(method);
+        }
+    }
+
+    private void AddHelperMethod(MethodDefinition method)
+    {
+        if (_helperMethods.Contains(method))
+            return;
+
+        _helperMethods.Add(method);
+    }
+
+    private static void ValidateMenuButtonMethod(MethodDefinition method)
+    {
+        if (!method.IsStatic || method.ReturnType.FullName != "System.Void" || method.Parameters.Count != 0)
+            throw new InvalidOperationException($"[MenuButton] methods must be static void with no parameters: {method.FullName}");
+    }
+
+    private static void ValidateGameplaySetupTabMethod(MethodDefinition method)
+    {
+        if (!method.IsStatic || method.ReturnType.FullName != "System.Void")
+            throw new InvalidOperationException($"[GameplaySetupTab] methods must be static void: {method.FullName}");
+
+        if (method.Parameters.Count != 2
+            || method.Parameters[0].ParameterType.FullName != "UnityEngine.GameObject"
+            || method.Parameters[1].ParameterType.FullName != "System.Boolean")
+        {
+            throw new InvalidOperationException($"[GameplaySetupTab] methods must have signature static void Method(UnityEngine.GameObject, bool): {method.FullName}");
         }
     }
 
@@ -640,6 +735,39 @@ internal sealed class Transpiler
         }
 
         return false;
+    }
+
+    private static int ReadNamedAttributeInt32(CustomAttribute attribute, string name, int defaultValue)
+    {
+        foreach (var property in attribute.Properties)
+        {
+            if (string.Equals(property.Name, name, StringComparison.Ordinal))
+                return ConvertAttributeValueToInt32(property.Argument.Value, defaultValue);
+        }
+
+        foreach (var field in attribute.Fields)
+        {
+            if (string.Equals(field.Name, name, StringComparison.Ordinal))
+                return ConvertAttributeValueToInt32(field.Argument.Value, defaultValue);
+        }
+
+        return defaultValue;
+    }
+
+    private static int ConvertAttributeValueToInt32(object? value, int defaultValue)
+    {
+        if (value is CustomAttributeArgument nestedArgument)
+            value = nestedArgument.Value;
+
+        return value switch
+        {
+            int intValue => intValue,
+            byte byteValue => byteValue,
+            sbyte sbyteValue => sbyteValue,
+            short shortValue => shortValue,
+            ushort ushortValue => ushortValue,
+            _ => defaultValue,
+        };
     }
 
     private static string? ReadHookMethodName(CustomAttribute attribute)
