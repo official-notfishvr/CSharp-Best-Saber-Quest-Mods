@@ -308,7 +308,7 @@ internal sealed class Transpiler
     {
         var localMethodNames = _helperMethods.ToDictionary(method => method.FullName, GetHelperFunctionName, StringComparer.Ordinal);
         var helperMethodEmissions = BuildHelperMethodEmissions(localMethodNames);
-        var bodyGenerators = _hooks.ToDictionary(hook => hook, hook => BuildPreferredTranslator(hook, localMethodNames));
+        var bodyGenerators = _hooks.ToDictionary(hook => hook, hook => BuildStructuredTranslator(hook, localMethodNames));
 
         var includeSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -947,28 +947,18 @@ internal sealed class Transpiler
                 Phase = HookPhase.Full,
             };
 
-            var translator = BuildPreferredTranslator(syntheticHook, localMethodNames);
+            var translator = BuildStructuredTranslator(syntheticHook, localMethodNames);
             result.Add(new HelperMethodEmission(method, functionName, translator));
         }
 
         return result;
     }
 
-    private IlMethodTranslator BuildPreferredTranslator(HookDefinition hook, IReadOnlyDictionary<string, string> localMethodNames)
+    private IlMethodTranslator BuildStructuredTranslator(HookDefinition hook, IReadOnlyDictionary<string, string> localMethodNames)
     {
-        try
-        {
-            var structuredTranslator = new IlMethodTranslator(hook, _typeSystem, _configValues, _localStaticFields, _metadataIndex, localMethodNames);
-            structuredTranslator.Translate();
-            return structuredTranslator;
-        }
-        catch (NotSupportedException ex)
-        {
-            Console.WriteLine($"Structured translation fallback for {hook.Method.FullName}: {ex.Message}");
-            var fallbackTranslator = new IlMethodTranslator(hook, _typeSystem, _configValues, _localStaticFields, _metadataIndex, localMethodNames);
-            fallbackTranslator.TranslateUnstructured();
-            return fallbackTranslator;
-        }
+        var translator = new IlMethodTranslator(hook, _typeSystem, _configValues, _localStaticFields, _metadataIndex, localMethodNames);
+        translator.Translate();
+        return translator;
     }
 
     private static string NormalizeGeneratedSource(string source)

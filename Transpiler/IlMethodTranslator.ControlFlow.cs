@@ -59,8 +59,9 @@ internal sealed partial class IlMethodTranslator
         if (!TryGetBranchTargetIndex(branch, index + 2, endIndex, out var targetIndex))
             return false;
 
+        EmitInstruction(_instructions[index], indentLevel);
         var bodyStartIndex = index + 3;
-        var positiveCondition = branch.OpCode.Code is Code.Brfalse or Code.Brfalse_S ? MakeExplicitBooleanCheck(Pop().Code, invert: false) : MakeExplicitBooleanCheck(Pop().Code, invert: true);
+        var positiveCondition = branch.OpCode.Code is Code.Brfalse or Code.Brfalse_S ? MakeExplicitBooleanCheck(GetLocalName(storedLocalIndex), invert: false) : MakeExplicitBooleanCheck(GetLocalName(storedLocalIndex), invert: true);
         positiveCondition = ExtendConditionChain(positiveCondition, ref bodyStartIndex, targetIndex, endIndex);
         return TryEmitStructuredConditionalBlock(positiveCondition, bodyStartIndex, targetIndex, endIndex, indentLevel, out consumedUntil);
     }
@@ -450,7 +451,8 @@ internal sealed partial class IlMethodTranslator
         if (_instructions[index + 2].OpCode.Code is not (Code.Brtrue or Code.Brtrue_S or Code.Brfalse or Code.Brfalse_S))
             return false;
 
-        conditionExpression = _instructions[index + 2].OpCode.Code is Code.Brfalse or Code.Brfalse_S ? MakeExplicitBooleanCheck(Pop().Code, invert: true) : MakeExplicitBooleanCheck(Pop().Code, invert: false);
+        Pop();
+        conditionExpression = _instructions[index + 2].OpCode.Code is Code.Brfalse or Code.Brfalse_S ? MakeExplicitBooleanCheck(GetLocalName(storedLocalIndex), invert: true) : MakeExplicitBooleanCheck(GetLocalName(storedLocalIndex), invert: false);
 
         return true;
     }

@@ -30,24 +30,30 @@ static bool PauseKey_PauseKeyMod_GetBindingState_GlobalNamespace_UnityXRHelper_S
     UnityEngine::Vector2 thumbstick_1;
     bool local10{};
     
-    if (((binding == 1))) {
-        if (((self->____leftController == nullptr))) {
+    local0 = (binding == 1);
+    if ((local0)) {
+        local1 = (self->____leftController == nullptr);
+        if ((local1)) {
             local2 = 0;
             return local2;
         }
         local2 = !((self->GetTriggerValue(self->____leftController->___node) < TriggerThreshold));
     }
     else {
-        if (((binding == 2))) {
-            if (((self->____rightController == nullptr))) {
+        local3 = (binding == 2);
+        if ((local3)) {
+            local4 = (self->____rightController == nullptr);
+            if ((local4)) {
                 local2 = 0;
                 return local2;
             }
             local2 = !((self->GetTriggerValue(self->____rightController->___node) < TriggerThreshold));
         }
         else {
-            if (((binding == 9))) {
-                if (((self->____leftController == nullptr))) {
+            local5 = (binding == 9);
+            if ((local5)) {
+                local7 = (self->____leftController == nullptr);
+                if ((local7)) {
                     local2 = 0;
                     return local2;
                 }
@@ -55,8 +61,10 @@ static bool PauseKey_PauseKeyMod_GetBindingState_GlobalNamespace_UnityXRHelper_S
                 local2 = !((UnityEngine::Vector2::SqrMagnitude(thumbstick) < (ThumbstickThreshold * ThumbstickThreshold)));
             }
             else {
-                if (((binding == 10))) {
-                    if (((self->____rightController == nullptr))) {
+                local8 = (binding == 10);
+                if ((local8)) {
+                    local10 = (self->____rightController == nullptr);
+                    if ((local10)) {
                         local2 = 0;
                         return local2;
                     }
@@ -82,11 +90,13 @@ MAKE_HOOK_MATCH(
     bool local1{};
     bool local2{};
     
-    if ((!(Enabled))) {
+    local0 = !(Enabled);
+    if ((local0)) {
         local1 = GlobalNamespace_UnityXRHelper_GetMenuButton_GlobalNamespace_UnityXRHelper_Hook(self);
     }
     else {
-        if (((PauseBinding == 0))) {
+        local2 = (PauseBinding == 0);
+        if ((local2)) {
             local1 = GlobalNamespace_UnityXRHelper_GetMenuButton_GlobalNamespace_UnityXRHelper_Hook(self);
         }
         else {
@@ -109,17 +119,20 @@ MAKE_HOOK_MATCH(
     bool local4{};
     bool local5{};
     
-    if ((!(Enabled))) {
+    local2 = !(Enabled);
+    if ((local2)) {
         local3 = GlobalNamespace_UnityXRHelper_GetMenuButtonDown_GlobalNamespace_UnityXRHelper_Hook(self);
     }
     else {
-        if (((PauseBinding == 0))) {
+        local4 = (PauseBinding == 0);
+        if ((local4)) {
             local3 = GlobalNamespace_UnityXRHelper_GetMenuButtonDown_GlobalNamespace_UnityXRHelper_Hook(self);
         }
         else {
             isPressed = PauseKey_PauseKeyMod_GetBindingState_GlobalNamespace_UnityXRHelper_System_Int32(self, PauseBinding);
             pressedThisFrame = 0;
-            if ((isPressed)) {
+            local5 = isPressed;
+            if ((local5)) {
                 pressedThisFrame = !(PauseKey_PauseKeyMod__pressedLastFrame);
             }
             PauseKey_PauseKeyMod__pressedLastFrame = isPressed;
@@ -133,7 +146,8 @@ MAKE_HOOK_MATCH(
 static void OnApplicationPausePostfix(GlobalNamespace::UnityXRHelper* self, bool pauseStatus) {
     bool local0{};
     
-    if ((!(pauseStatus))) {
+    local0 = !(pauseStatus);
+    if ((local0)) {
         return;
     }
     PauseKey_PauseKeyMod__pressedLastFrame = 0;
