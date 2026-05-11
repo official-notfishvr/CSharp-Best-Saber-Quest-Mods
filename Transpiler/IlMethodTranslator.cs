@@ -66,9 +66,7 @@ internal sealed partial class IlMethodTranslator
                 continue;
 
             RequiredInclude(variable.VariableType);
-            var declaration = ShouldValueInitializeLocal(variable.VariableType)
-                ? $"{_typeSystem.MapType(variable.VariableType)} {GetLocalName(i)}{{}};"
-                : $"{_typeSystem.MapType(variable.VariableType)} {GetLocalName(i)};";
+            var declaration = ShouldValueInitializeLocal(variable.VariableType) ? $"{_typeSystem.MapType(variable.VariableType)} {GetLocalName(i)}{{}};" : $"{_typeSystem.MapType(variable.VariableType)} {GetLocalName(i)};";
             AppendLine(0, declaration);
             _declaredLocals.Add(i);
         }
@@ -101,9 +99,7 @@ internal sealed partial class IlMethodTranslator
                 continue;
 
             RequiredInclude(variable.VariableType);
-            var declaration = ShouldValueInitializeLocal(variable.VariableType)
-                ? $"{_typeSystem.MapType(variable.VariableType)} {GetLocalName(i)}{{}};"
-                : $"{_typeSystem.MapType(variable.VariableType)} {GetLocalName(i)};";
+            var declaration = ShouldValueInitializeLocal(variable.VariableType) ? $"{_typeSystem.MapType(variable.VariableType)} {GetLocalName(i)}{{}};" : $"{_typeSystem.MapType(variable.VariableType)} {GetLocalName(i)};";
             AppendLine(0, declaration);
             _declaredLocals.Add(i);
         }

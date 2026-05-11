@@ -40,8 +40,8 @@ internal sealed class TypeMetadataIndex
 
         var candidateName = accessorName.Substring(4);
         var property = type.Properties.FirstOrDefault(item =>
-            string.Equals(item.Name, candidateName, StringComparison.OrdinalIgnoreCase) &&
-            ((accessorName.StartsWith("get_", StringComparison.Ordinal) && item.HasGetter) || (accessorName.StartsWith("set_", StringComparison.Ordinal) && item.HasSetter)));
+            string.Equals(item.Name, candidateName, StringComparison.OrdinalIgnoreCase) && ((accessorName.StartsWith("get_", StringComparison.Ordinal) && item.HasGetter) || (accessorName.StartsWith("set_", StringComparison.Ordinal) && item.HasSetter))
+        );
 
         if (property == null)
             return null;
@@ -54,15 +54,11 @@ internal sealed class TypeMetadataIndex
         if (!_types.TryGetValue(declaringTypeFullName, out var type))
             return null;
 
-        var method = type.Methods.FirstOrDefault(item =>
-            string.Equals(item.Name, methodName, StringComparison.Ordinal) &&
-            item.Parameters.Count == parameterCount);
+        var method = type.Methods.FirstOrDefault(item => string.Equals(item.Name, methodName, StringComparison.Ordinal) && item.Parameters.Count == parameterCount);
         if (method != null)
             return method.Name;
 
-        method = type.Methods.FirstOrDefault(item =>
-            string.Equals(item.Name, methodName, StringComparison.OrdinalIgnoreCase) &&
-            item.Parameters.Count == parameterCount);
+        method = type.Methods.FirstOrDefault(item => string.Equals(item.Name, methodName, StringComparison.OrdinalIgnoreCase) && item.Parameters.Count == parameterCount);
         return method?.Name;
     }
 

@@ -163,7 +163,7 @@ internal sealed partial class IlMethodTranslator
             case Code.Brfalse_S:
                 if (_useGotoFlow)
                 {
-                    AppendConditionalGoto((Instruction)instruction.Operand, NegateCondition(Pop().Code), indentLevel);
+                    AppendConditionalGoto((Instruction)instruction.Operand, MakeExplicitBooleanCheck(Pop().Code, invert: true), indentLevel);
                     return;
                 }
                 break;
@@ -171,7 +171,7 @@ internal sealed partial class IlMethodTranslator
             case Code.Brtrue_S:
                 if (_useGotoFlow)
                 {
-                    AppendConditionalGoto((Instruction)instruction.Operand, Pop().Code, indentLevel);
+                    AppendConditionalGoto((Instruction)instruction.Operand, MakeExplicitBooleanCheck(Pop().Code, invert: false), indentLevel);
                     return;
                 }
                 break;
@@ -239,7 +239,9 @@ internal sealed partial class IlMethodTranslator
 
                 if (_instructionIndices.TryGetValue(target, out var targetIndex) && targetIndex == _instructions.Count - 1 && _instructions[targetIndex].OpCode.Code == Code.Ret)
                     return;
-                throw new NotSupportedException($"Unsupported non-structured branch in {_method.FullName} (gotoFlow={_useGotoFlow}, targetIndex={( _instructionIndices.TryGetValue(target, out var debugTargetIndex) ? debugTargetIndex : -1)}, hasLabel={(_gotoLabels != null && _instructionIndices.TryGetValue(target, out var labelTargetIndex) && _gotoLabels.ContainsKey(labelTargetIndex))})");
+                throw new NotSupportedException(
+                    $"Unsupported non-structured branch in {_method.FullName} (gotoFlow={_useGotoFlow}, targetIndex={(_instructionIndices.TryGetValue(target, out var debugTargetIndex) ? debugTargetIndex : -1)}, hasLabel={(_gotoLabels != null && _instructionIndices.TryGetValue(target, out var labelTargetIndex) && _gotoLabels.ContainsKey(labelTargetIndex))})"
+                );
             }
             case Code.Ret:
                 EmitReturn(indentLevel);
@@ -764,18 +766,14 @@ internal sealed partial class IlMethodTranslator
 
         if (instance != null)
         {
-            code = args.Count == 0
-                ? $"::il2cpp_utils::RunMethodRethrow<{mappedReturnType}, false>({instance.Code}, \"{emittedMethodName}\")"
-                : $"::il2cpp_utils::RunMethodRethrow<{mappedReturnType}, false>({instance.Code}, \"{emittedMethodName}\", {argumentList})";
+            code = args.Count == 0 ? $"::il2cpp_utils::RunMethodRethrow<{mappedReturnType}, false>({instance.Code}, \"{emittedMethodName}\")" : $"::il2cpp_utils::RunMethodRethrow<{mappedReturnType}, false>({instance.Code}, \"{emittedMethodName}\", {argumentList})";
         }
         else
         {
             var runtimeNamespace = method.DeclaringType.Namespace ?? "";
             var runtimeClassName = GetRuntimeClassName(method.DeclaringType);
             var classExpression = $"::il2cpp_utils::GetClassFromName(\"{runtimeNamespace}\", \"{runtimeClassName}\")";
-            code = args.Count == 0
-                ? $"::il2cpp_utils::RunMethodRethrow<{mappedReturnType}, false>({classExpression}, \"{emittedMethodName}\")"
-                : $"::il2cpp_utils::RunMethodRethrow<{mappedReturnType}, false>({classExpression}, \"{emittedMethodName}\", {argumentList})";
+            code = args.Count == 0 ? $"::il2cpp_utils::RunMethodRethrow<{mappedReturnType}, false>({classExpression}, \"{emittedMethodName}\")" : $"::il2cpp_utils::RunMethodRethrow<{mappedReturnType}, false>({classExpression}, \"{emittedMethodName}\", {argumentList})";
         }
 
         return new CppExpression
@@ -786,6 +784,7 @@ internal sealed partial class IlMethodTranslator
             HasSideEffects = true,
         };
     }
+
     private bool IsConfigAccessor(MethodReference method, out ConfigEntry config)
     {
         var declaringTypeFullName = method.DeclaringType.FullName;
@@ -825,8 +824,7 @@ internal sealed partial class IlMethodTranslator
 
     private string ResolveMethodName(MethodReference method)
     {
-        if ((method.Name.StartsWith("get_", StringComparison.Ordinal) || method.Name.StartsWith("set_", StringComparison.Ordinal)) &&
-            TryGetPropertyAccessorName(method, out var propertyName))
+        if ((method.Name.StartsWith("get_", StringComparison.Ordinal) || method.Name.StartsWith("set_", StringComparison.Ordinal)) && TryGetPropertyAccessorName(method, out var propertyName))
         {
             return $"{method.Name[..4]}{propertyName}";
         }
@@ -875,8 +873,7 @@ internal sealed partial class IlMethodTranslator
         if (method.ReturnType is not GenericParameter genericParameter)
             return method.ReturnType;
 
-        var genericInstance = NormalizeTypeReference(method.DeclaringType) as GenericInstanceType
-            ?? NormalizeTypeReference(instance?.Type) as GenericInstanceType;
+        var genericInstance = NormalizeTypeReference(method.DeclaringType) as GenericInstanceType ?? NormalizeTypeReference(instance?.Type) as GenericInstanceType;
         if (genericInstance != null && genericParameter.Position >= 0 && genericParameter.Position < genericInstance.GenericArguments.Count)
             return genericInstance.GenericArguments[genericParameter.Position];
 
@@ -914,7 +911,8 @@ internal sealed partial class IlMethodTranslator
     {
         var right = Pop();
         var left = Pop();
-        _stack.Push(new CppExpression { Code = $"({left.Code} {op} {right.Code})", Type = _method.Module.TypeSystem.Boolean });
+        var comparisonCode = TryBuildSimplifiedEqualityExpression(op, left, right, out var simplified) ? simplified : $"({left.Code} {op} {right.Code})";
+        _stack.Push(new CppExpression { Code = comparisonCode, Type = _method.Module.TypeSystem.Boolean });
     }
 
     private void EmitUnsignedGreaterThan()
@@ -1091,16 +1089,18 @@ internal sealed partial class IlMethodTranslator
     {
         var right = Pop();
         var left = Pop();
-        var condition = opcode switch
-        {
-            Code.Beq or Code.Beq_S => $"({left.Code} == {right.Code})",
-            Code.Bne_Un or Code.Bne_Un_S => $"({left.Code} != {right.Code})",
-            Code.Bge or Code.Bge_S or Code.Bge_Un or Code.Bge_Un_S => $"({left.Code} >= {right.Code})",
-            Code.Bgt or Code.Bgt_S or Code.Bgt_Un or Code.Bgt_Un_S => $"({left.Code} > {right.Code})",
-            Code.Ble or Code.Ble_S or Code.Ble_Un or Code.Ble_Un_S => $"({left.Code} <= {right.Code})",
-            Code.Blt or Code.Blt_S or Code.Blt_Un or Code.Blt_Un_S => $"({left.Code} < {right.Code})",
-            _ => throw new NotSupportedException($"Unsupported compare branch opcode {opcode}"),
-        };
+        var condition = TryBuildSimplifiedCompareCondition(opcode, left, right, branchWhenTrue: true, out var simplified)
+            ? simplified
+            : opcode switch
+            {
+                Code.Beq or Code.Beq_S => $"({left.Code} == {right.Code})",
+                Code.Bne_Un or Code.Bne_Un_S => $"({left.Code} != {right.Code})",
+                Code.Bge or Code.Bge_S or Code.Bge_Un or Code.Bge_Un_S => $"({left.Code} >= {right.Code})",
+                Code.Bgt or Code.Bgt_S or Code.Bgt_Un or Code.Bgt_Un_S => $"({left.Code} > {right.Code})",
+                Code.Ble or Code.Ble_S or Code.Ble_Un or Code.Ble_Un_S => $"({left.Code} <= {right.Code})",
+                Code.Blt or Code.Blt_S or Code.Blt_Un or Code.Blt_Un_S => $"({left.Code} < {right.Code})",
+                _ => throw new NotSupportedException($"Unsupported compare branch opcode {opcode}"),
+            };
 
         AppendConditionalGoto(targetInstruction, condition, indentLevel);
     }
@@ -1176,16 +1176,7 @@ internal sealed partial class IlMethodTranslator
 
     private static bool IsNumericMetadataType(MetadataType metadataType)
     {
-        return metadataType is MetadataType.Byte
-            or MetadataType.SByte
-            or MetadataType.Int16
-            or MetadataType.UInt16
-            or MetadataType.Int32
-            or MetadataType.UInt32
-            or MetadataType.Int64
-            or MetadataType.UInt64
-            or MetadataType.Single
-            or MetadataType.Double;
+        return metadataType is MetadataType.Byte or MetadataType.SByte or MetadataType.Int16 or MetadataType.UInt16 or MetadataType.Int32 or MetadataType.UInt32 or MetadataType.Int64 or MetadataType.UInt64 or MetadataType.Single or MetadataType.Double;
     }
 
     private CppExpression MaterializeTemporary(CppExpression value, int indentLevel, string prefix)
@@ -1255,5 +1246,93 @@ internal sealed partial class IlMethodTranslator
         }
 
         return value;
+    }
+
+    private static string MakeExplicitBooleanCheck(string value, bool invert)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return invert ? "false" : "true";
+
+        var normalizedValue = value.Trim();
+        if (normalizedValue is "0" or "false" or "nullptr")
+        {
+            return invert ? "true" : "false";
+        }
+
+        if (normalizedValue is "1" or "true")
+        {
+            return invert ? "false" : "true";
+        }
+
+        return invert ? $"!({normalizedValue})" : $"({normalizedValue})";
+    }
+
+    private bool TryBuildSimplifiedCompareCondition(Code opcode, CppExpression left, CppExpression right, bool branchWhenTrue, out string condition)
+    {
+        condition = "";
+        string? comparisonOperator = opcode switch
+        {
+            Code.Beq or Code.Beq_S => "==",
+            Code.Bne_Un or Code.Bne_Un_S => "!=",
+            _ => null,
+        };
+
+        if (comparisonOperator == null)
+            return false;
+
+        if (!TryBuildSimplifiedEqualityExpression(comparisonOperator, left, right, out var comparisonExpression))
+            return false;
+
+        condition = branchWhenTrue ? comparisonExpression : NegateBooleanExpression(comparisonExpression);
+        return true;
+    }
+
+    private bool TryBuildSimplifiedEqualityExpression(string op, CppExpression left, CppExpression right, out string expression)
+    {
+        expression = "";
+        if (!string.Equals(op, "==", StringComparison.Ordinal) && !string.Equals(op, "!=", StringComparison.Ordinal))
+            return false;
+
+        if (TryBuildBooleanLiteralComparison(left, right, string.Equals(op, "==", StringComparison.Ordinal), out expression))
+            return true;
+
+        return TryBuildBooleanLiteralComparison(right, left, string.Equals(op, "==", StringComparison.Ordinal), out expression);
+    }
+
+    private bool TryBuildBooleanLiteralComparison(CppExpression candidateBoolean, CppExpression candidateLiteral, bool equalsComparison, out string expression)
+    {
+        expression = "";
+        if (!IsBooleanType(candidateBoolean.Type) || !TryGetBooleanLiteralValue(candidateLiteral.Code, out var literalValue))
+            return false;
+
+        var shouldBeTrue = equalsComparison ? literalValue : !literalValue;
+        expression = shouldBeTrue ? $"({candidateBoolean.Code})" : NegateBooleanExpression(candidateBoolean.Code);
+        return true;
+    }
+
+    private static bool TryGetBooleanLiteralValue(string code, out bool value)
+    {
+        switch (code.Trim())
+        {
+            case "0":
+            case "false":
+                value = false;
+                return true;
+            case "1":
+            case "true":
+                value = true;
+                return true;
+            default:
+                value = false;
+                return false;
+        }
+    }
+
+    private static string NegateBooleanExpression(string expression)
+    {
+        var normalizedExpression = expression.Trim();
+        return normalizedExpression.StartsWith("!(", StringComparison.Ordinal) && normalizedExpression.EndsWith(")", StringComparison.Ordinal)
+            ? normalizedExpression[2..^1]
+            : $"!({normalizedExpression})";
     }
 }

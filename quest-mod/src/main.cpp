@@ -1,118 +1,161 @@
 #include "main.hpp"
 #include "scotland2/shared/modloader.h"
 
-#include "bsml/shared/BSML.hpp"
-#include "GlobalNamespace/StandardLevelDetailView.hpp"
-#include "GlobalNamespace/StandardLevelDetailViewController.hpp"
-#include "System/String.hpp"
-#include "TMPro/TextMeshProUGUI.hpp"
-#include "TMPro/TMP_Text.hpp"
-#include "UnityEngine/GameObject.hpp"
-#include "UnityEngine/UI/Button.hpp"
-#include "UnityEngine/UI/Selectable.hpp"
+#include "GlobalNamespace/UnityXRController.hpp"
+#include "GlobalNamespace/UnityXRHelper.hpp"
+#include "UnityEngine/Vector2.hpp"
+#include "UnityEngine/XR/XRNode.hpp"
 
-static modloader::ModInfo modInfo{"com.example.testmod", "1.0.0", 0};
+static modloader::ModInfo modInfo{"com.csharp.quest.pausekey", "0.1.0", 0};
+
+static bool PauseKey_PauseKeyMod__pressedLastFrame = false;
 
 Configuration &getConfig() {
     static Configuration config(modInfo);
     return config;
 }
 
-static void SampleMod_TestMod_OpenSampleMenu();
-static void SampleMod_TestMod_OnGameplaySetupTabActivate_UnityEngine_GameObject_System_Boolean(UnityEngine::GameObject* root, bool firstActivation);
+static bool PauseKey_PauseKeyMod_GetBindingState_GlobalNamespace_UnityXRHelper_System_Int32(GlobalNamespace::UnityXRHelper* self, int32_t binding);
 
-static void SampleMod_TestMod_OpenSampleMenu() {
-    return;
-}
-
-static void SampleMod_TestMod_OnGameplaySetupTabActivate_UnityEngine_GameObject_System_Boolean(UnityEngine::GameObject* root, bool firstActivation) {
-    return;
-}
-
-static void OnLevelScreenActivatePrefix(GlobalNamespace::StandardLevelDetailViewController* self, bool firstActivation, bool addedToHierarchy, bool screenSystemEnabling) {
-    GlobalNamespace::StandardLevelDetailView* detailView{};
+static bool PauseKey_PauseKeyMod_GetBindingState_GlobalNamespace_UnityXRHelper_System_Int32(GlobalNamespace::UnityXRHelper* self, int32_t binding) {
+    bool local0{};
     bool local1{};
     bool local2{};
     bool local3{};
     bool local4{};
     bool local5{};
-    bool local6{};
+    UnityEngine::Vector2 thumbstick;
+    bool local7{};
+    bool local8{};
+    UnityEngine::Vector2 thumbstick_1;
+    bool local10{};
     
-    local1 = (Enabled == 0);
-    if (!(local1)) goto label_8;
-    goto label_67;
-    label_8:;
-    detailView = self->____standardLevelDetailView;
-    local2 = (detailView == nullptr);
-    if (!(local2)) goto label_18;
-    goto label_67;
-    label_18:;
-    local3 = (detailView->____buttonsWrapper != nullptr);
-    if (!(local3)) goto label_30;
-    detailView->____buttonsWrapper->SetActive(1);
-    label_30:;
-    local4 = (detailView->____actionButtonText != nullptr);
-    if (!(local4)) goto label_44;
-    detailView->____actionButtonText->set_text(::il2cpp_utils::RunMethodRethrow<::StringW, false>(::il2cpp_utils::GetClassFromName("System", "String"), "Concat", ButtonText, PrefixSuffix));
-    label_44:;
-    local5 = (detailView->____beatmapLevelVersionText != nullptr);
-    if (!(local5)) goto label_56;
-    detailView->____beatmapLevelVersionText->set_text(VersionStatusText);
-    label_56:;
-    local6 = (detailView->____actionButton != nullptr);
-    if (!(local6)) goto label_67;
-    detailView->____actionButton->___m_Interactable = 1;
-    label_67:;
-    return;
-}
-
-static void OnLevelScreenActivatePostfix(GlobalNamespace::StandardLevelDetailViewController* self, bool firstActivation, bool addedToHierarchy, bool screenSystemEnabling) {
-    GlobalNamespace::StandardLevelDetailView* detailView{};
-    bool local1{};
-    bool local2{};
-    bool local3{};
-    bool local4{};
-    
-    local1 = (Enabled == 0);
-    if (!(local1)) goto label_8;
-    goto label_43;
-    label_8:;
-    detailView = self->____standardLevelDetailView;
-    local2 = (detailView == nullptr);
-    if (!(local2)) goto label_18;
-    goto label_43;
-    label_18:;
-    local3 = (detailView->____actionButtonText != nullptr);
-    if (!(local3)) goto label_32;
-    detailView->____actionButtonText->set_text(::il2cpp_utils::RunMethodRethrow<::StringW, false>(::il2cpp_utils::GetClassFromName("System", "String"), "Concat", ButtonText, PostfixSuffix));
-    label_32:;
-    local4 = (detailView->____practiceButton != nullptr);
-    if (!(local4)) goto label_43;
-    detailView->____practiceButton->___m_Interactable = 1;
-    label_43:;
-    return;
+    if (((binding == 1))) {
+        if (((self->____leftController == nullptr))) {
+            local2 = 0;
+            return local2;
+        }
+        local2 = !((self->GetTriggerValue(self->____leftController->___node) < TriggerThreshold));
+    }
+    else {
+        if (((binding == 2))) {
+            if (((self->____rightController == nullptr))) {
+                local2 = 0;
+                return local2;
+            }
+            local2 = !((self->GetTriggerValue(self->____rightController->___node) < TriggerThreshold));
+        }
+        else {
+            if (((binding == 9))) {
+                if (((self->____leftController == nullptr))) {
+                    local2 = 0;
+                    return local2;
+                }
+                thumbstick = self->GetThumbstickValue(self->____leftController->___node);
+                local2 = !((UnityEngine::Vector2::SqrMagnitude(thumbstick) < (ThumbstickThreshold * ThumbstickThreshold)));
+            }
+            else {
+                if (((binding == 10))) {
+                    if (((self->____rightController == nullptr))) {
+                        local2 = 0;
+                        return local2;
+                    }
+                    thumbstick_1 = self->GetThumbstickValue(self->____rightController->___node);
+                    local2 = !((UnityEngine::Vector2::SqrMagnitude(thumbstick_1) < (ThumbstickThreshold * ThumbstickThreshold)));
+                }
+                else {
+                    local2 = 0;
+                    return local2;
+                }
+            }
+        }
+    }
+    return local2;
 }
 
 MAKE_HOOK_MATCH(
-    GlobalNamespace_StandardLevelDetailViewController_DidActivate_GlobalNamespace_StandardLevelDetailViewController_System_Boolean_System_Boolean_System_Boolean_Hook,
-    &GlobalNamespace::StandardLevelDetailViewController::DidActivate,
+    GlobalNamespace_UnityXRHelper_GetMenuButton_GlobalNamespace_UnityXRHelper_Hook,
+    &GlobalNamespace::UnityXRHelper::GetMenuButton,
+    bool,
+    GlobalNamespace::UnityXRHelper* self) {
+    bool local0{};
+    bool local1{};
+    bool local2{};
+    
+    if ((!(Enabled))) {
+        local1 = GlobalNamespace_UnityXRHelper_GetMenuButton_GlobalNamespace_UnityXRHelper_Hook(self);
+    }
+    else {
+        if (((PauseBinding == 0))) {
+            local1 = GlobalNamespace_UnityXRHelper_GetMenuButton_GlobalNamespace_UnityXRHelper_Hook(self);
+        }
+        else {
+            local1 = PauseKey_PauseKeyMod_GetBindingState_GlobalNamespace_UnityXRHelper_System_Int32(self, PauseBinding);
+            return local1;
+        }
+    }
+    return local1;
+}
+
+MAKE_HOOK_MATCH(
+    GlobalNamespace_UnityXRHelper_GetMenuButtonDown_GlobalNamespace_UnityXRHelper_Hook,
+    &GlobalNamespace::UnityXRHelper::GetMenuButtonDown,
+    bool,
+    GlobalNamespace::UnityXRHelper* self) {
+    bool isPressed{};
+    bool pressedThisFrame{};
+    bool local2{};
+    bool local3{};
+    bool local4{};
+    bool local5{};
+    
+    if ((!(Enabled))) {
+        local3 = GlobalNamespace_UnityXRHelper_GetMenuButtonDown_GlobalNamespace_UnityXRHelper_Hook(self);
+    }
+    else {
+        if (((PauseBinding == 0))) {
+            local3 = GlobalNamespace_UnityXRHelper_GetMenuButtonDown_GlobalNamespace_UnityXRHelper_Hook(self);
+        }
+        else {
+            isPressed = PauseKey_PauseKeyMod_GetBindingState_GlobalNamespace_UnityXRHelper_System_Int32(self, PauseBinding);
+            pressedThisFrame = 0;
+            if ((isPressed)) {
+                pressedThisFrame = !(PauseKey_PauseKeyMod__pressedLastFrame);
+            }
+            PauseKey_PauseKeyMod__pressedLastFrame = isPressed;
+            local3 = pressedThisFrame;
+            return local3;
+        }
+    }
+    return local3;
+}
+
+static void OnApplicationPausePostfix(GlobalNamespace::UnityXRHelper* self, bool pauseStatus) {
+    bool local0{};
+    
+    if ((!(pauseStatus))) {
+        return;
+    }
+    PauseKey_PauseKeyMod__pressedLastFrame = 0;
+}
+
+MAKE_HOOK_MATCH(
+    GlobalNamespace_UnityXRHelper_OnApplicationPause_GlobalNamespace_UnityXRHelper_System_Boolean_Hook,
+    &GlobalNamespace::UnityXRHelper::OnApplicationPause,
     void,
-    GlobalNamespace::StandardLevelDetailViewController* self, bool firstActivation, bool addedToHierarchy, bool screenSystemEnabling) {
-    OnLevelScreenActivatePrefix(self, firstActivation, addedToHierarchy, screenSystemEnabling);
-    GlobalNamespace_StandardLevelDetailViewController_DidActivate_GlobalNamespace_StandardLevelDetailViewController_System_Boolean_System_Boolean_System_Boolean_Hook(self, firstActivation, addedToHierarchy, screenSystemEnabling);
-    OnLevelScreenActivatePostfix(self, firstActivation, addedToHierarchy, screenSystemEnabling);
+    GlobalNamespace::UnityXRHelper* self, bool pauseStatus) {
+    GlobalNamespace_UnityXRHelper_OnApplicationPause_GlobalNamespace_UnityXRHelper_System_Boolean_Hook(self, pauseStatus);
+    OnApplicationPausePostfix(self, pauseStatus);
     return;
 }
 
 MOD_EXTERN_FUNC void late_load() noexcept {
     il2cpp_functions::Init();
-    BSML::Init();
-    BSML::Register::RegisterMenuButton("SampleMod", "Open the SampleMod menu", SampleMod_TestMod_OpenSampleMenu);
-    BSML::Register::RegisterGameplaySetupTab("SampleMod", SampleMod_TestMod_OnGameplaySetupTabActivate_UnityEngine_GameObject_System_Boolean, BSML::MenuType::All);
-
     PaperLogger.info("Installing hooks...");
 
-    INSTALL_HOOK(PaperLogger, GlobalNamespace_StandardLevelDetailViewController_DidActivate_GlobalNamespace_StandardLevelDetailViewController_System_Boolean_System_Boolean_System_Boolean_Hook);
+    INSTALL_HOOK(PaperLogger, GlobalNamespace_UnityXRHelper_GetMenuButton_GlobalNamespace_UnityXRHelper_Hook);
+    INSTALL_HOOK(PaperLogger, GlobalNamespace_UnityXRHelper_GetMenuButtonDown_GlobalNamespace_UnityXRHelper_Hook);
+    INSTALL_HOOK(PaperLogger, GlobalNamespace_UnityXRHelper_OnApplicationPause_GlobalNamespace_UnityXRHelper_System_Boolean_Hook);
 
     PaperLogger.info("Installed all hooks!");
 }

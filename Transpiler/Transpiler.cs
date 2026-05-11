@@ -11,8 +11,11 @@ namespace Transpiler;
 internal sealed class Transpiler
 {
     private sealed record HookEmission(HookDefinition Hook, HookDefinition? PrefixHook, HookDefinition? PostfixHook, IlMethodTranslator? FullBody, IlMethodTranslator? PrefixBody, IlMethodTranslator? PostfixBody);
+
     private sealed record HelperMethodEmission(MethodDefinition Method, string FunctionName, IlMethodTranslator Body);
+
     private sealed record MenuButtonRegistration(MethodDefinition Method, string Text, string HoverHint);
+
     private sealed record GameplaySetupTabRegistration(MethodDefinition Method, string Name, int MenuTypeValue);
 
     private readonly string _assemblyPath;
@@ -305,10 +308,7 @@ internal sealed class Transpiler
     {
         var localMethodNames = _helperMethods.ToDictionary(method => method.FullName, GetHelperFunctionName, StringComparer.Ordinal);
         var helperMethodEmissions = BuildHelperMethodEmissions(localMethodNames);
-        var bodyGenerators = _hooks.ToDictionary(hook => hook, hook => new IlMethodTranslator(hook, _typeSystem, _configValues, _localStaticFields, _metadataIndex, localMethodNames));
-
-        foreach (var generator in bodyGenerators.Values)
-            generator.TranslateUnstructured();
+        var bodyGenerators = _hooks.ToDictionary(hook => hook, hook => BuildPreferredTranslator(hook, localMethodNames));
 
         var includeSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -618,22 +618,14 @@ internal sealed class Transpiler
             foreach (var attribute in method.CustomAttributes.Where(IsMenuButtonAttribute))
             {
                 ValidateMenuButtonMethod(method);
-                _menuButtons.Add(
-                    new MenuButtonRegistration(
-                        method,
-                        attribute.ConstructorArguments.Count > 0 ? attribute.ConstructorArguments[0].Value?.ToString() ?? "" : "",
-                        attribute.ConstructorArguments.Count > 1 ? attribute.ConstructorArguments[1].Value?.ToString() ?? "" : ""));
+                _menuButtons.Add(new MenuButtonRegistration(method, attribute.ConstructorArguments.Count > 0 ? attribute.ConstructorArguments[0].Value?.ToString() ?? "" : "", attribute.ConstructorArguments.Count > 1 ? attribute.ConstructorArguments[1].Value?.ToString() ?? "" : ""));
                 AddHelperMethod(method);
             }
 
             foreach (var attribute in method.CustomAttributes.Where(IsGameplaySetupTabAttribute))
             {
                 ValidateGameplaySetupTabMethod(method);
-                _gameplaySetupTabs.Add(
-                    new GameplaySetupTabRegistration(
-                        method,
-                        attribute.ConstructorArguments.Count > 0 ? attribute.ConstructorArguments[0].Value?.ToString() ?? "" : "",
-                        ReadNamedAttributeInt32(attribute, "MenuType", 15)));
+                _gameplaySetupTabs.Add(new GameplaySetupTabRegistration(method, attribute.ConstructorArguments.Count > 0 ? attribute.ConstructorArguments[0].Value?.ToString() ?? "" : "", ReadNamedAttributeInt32(attribute, "MenuType", 15)));
                 AddHelperMethod(method);
             }
         }
@@ -675,9 +667,7 @@ internal sealed class Transpiler
         if (!method.IsStatic || method.ReturnType.FullName != "System.Void")
             throw new InvalidOperationException($"[GameplaySetupTab] methods must be static void: {method.FullName}");
 
-        if (method.Parameters.Count != 2
-            || method.Parameters[0].ParameterType.FullName != "UnityEngine.GameObject"
-            || method.Parameters[1].ParameterType.FullName != "System.Boolean")
+        if (method.Parameters.Count != 2 || method.Parameters[0].ParameterType.FullName != "UnityEngine.GameObject" || method.Parameters[1].ParameterType.FullName != "System.Boolean")
         {
             throw new InvalidOperationException($"[GameplaySetupTab] methods must have signature static void Method(UnityEngine.GameObject, bool): {method.FullName}");
         }
@@ -713,8 +703,7 @@ internal sealed class Transpiler
             "System.Boolean" => value is bool boolValue ? (boolValue ? "true" : "false") : null,
             "System.Single" => value is float floatValue ? floatValue.ToString("R", CultureInfo.InvariantCulture) : Convert.ToSingle(value, CultureInfo.InvariantCulture).ToString("R", CultureInfo.InvariantCulture),
             "System.Double" => value is double doubleValue ? doubleValue.ToString("R", CultureInfo.InvariantCulture) : Convert.ToDouble(value, CultureInfo.InvariantCulture).ToString("R", CultureInfo.InvariantCulture),
-            "System.Byte" or "System.SByte" or "System.Int16" or "System.UInt16" or "System.Int32" or "System.UInt32" or "System.Int64" or "System.UInt64"
-                => Convert.ToString(value, CultureInfo.InvariantCulture),
+            "System.Byte" or "System.SByte" or "System.Int16" or "System.UInt16" or "System.Int32" or "System.UInt32" or "System.Int64" or "System.UInt64" => Convert.ToString(value, CultureInfo.InvariantCulture),
             "System.String" => value is string text ? CppLiteral.String(text) : CppLiteral.String(value.ToString() ?? string.Empty),
             _ => Convert.ToString(value, CultureInfo.InvariantCulture),
         };
@@ -958,12 +947,28 @@ internal sealed class Transpiler
                 Phase = HookPhase.Full,
             };
 
-            var translator = new IlMethodTranslator(syntheticHook, _typeSystem, _configValues, _localStaticFields, _metadataIndex, localMethodNames);
-            translator.TranslateUnstructured();
+            var translator = BuildPreferredTranslator(syntheticHook, localMethodNames);
             result.Add(new HelperMethodEmission(method, functionName, translator));
         }
 
         return result;
+    }
+
+    private IlMethodTranslator BuildPreferredTranslator(HookDefinition hook, IReadOnlyDictionary<string, string> localMethodNames)
+    {
+        try
+        {
+            var structuredTranslator = new IlMethodTranslator(hook, _typeSystem, _configValues, _localStaticFields, _metadataIndex, localMethodNames);
+            structuredTranslator.Translate();
+            return structuredTranslator;
+        }
+        catch (NotSupportedException ex)
+        {
+            Console.WriteLine($"Structured translation fallback for {hook.Method.FullName}: {ex.Message}");
+            var fallbackTranslator = new IlMethodTranslator(hook, _typeSystem, _configValues, _localStaticFields, _metadataIndex, localMethodNames);
+            fallbackTranslator.TranslateUnstructured();
+            return fallbackTranslator;
+        }
     }
 
     private static string NormalizeGeneratedSource(string source)

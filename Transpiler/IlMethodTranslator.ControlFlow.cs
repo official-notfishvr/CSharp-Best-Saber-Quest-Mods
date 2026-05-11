@@ -60,7 +60,7 @@ internal sealed partial class IlMethodTranslator
             return false;
 
         var bodyStartIndex = index + 3;
-        var positiveCondition = branch.OpCode.Code is Code.Brfalse or Code.Brfalse_S ? Pop().Code : NegateCondition(Pop().Code);
+        var positiveCondition = branch.OpCode.Code is Code.Brfalse or Code.Brfalse_S ? MakeExplicitBooleanCheck(Pop().Code, invert: false) : MakeExplicitBooleanCheck(Pop().Code, invert: true);
         positiveCondition = ExtendConditionChain(positiveCondition, ref bodyStartIndex, targetIndex, endIndex);
         return TryEmitStructuredConditionalBlock(positiveCondition, bodyStartIndex, targetIndex, endIndex, indentLevel, out consumedUntil);
     }
@@ -123,7 +123,7 @@ internal sealed partial class IlMethodTranslator
                     return false;
 
                 var bodyStartIndex = index + 1;
-                var positiveCondition = instruction.OpCode.Code is Code.Brfalse or Code.Brfalse_S ? Pop().Code : NegateCondition(Pop().Code);
+                var positiveCondition = instruction.OpCode.Code is Code.Brfalse or Code.Brfalse_S ? MakeExplicitBooleanCheck(Pop().Code, invert: false) : MakeExplicitBooleanCheck(Pop().Code, invert: true);
                 positiveCondition = ExtendConditionChain(positiveCondition, ref bodyStartIndex, targetIndex, endIndex);
                 return TryEmitStructuredConditionalBlock(positiveCondition, bodyStartIndex, targetIndex, endIndex, indentLevel, out consumedUntil);
             }
@@ -154,7 +154,7 @@ internal sealed partial class IlMethodTranslator
                 var right = Pop();
                 var left = Pop();
                 var bodyStartIndex = index + 1;
-                var positiveCondition = BuildBodyConditionForCompareBranch(instruction.OpCode.Code, left.Code, right.Code);
+                var positiveCondition = BuildBodyConditionForCompareBranch(instruction.OpCode.Code, left, right);
                 positiveCondition = ExtendConditionChain(positiveCondition, ref bodyStartIndex, targetIndex, endIndex);
                 return TryEmitStructuredConditionalBlock(positiveCondition, bodyStartIndex, targetIndex, endIndex, indentLevel, out consumedUntil);
             }
@@ -202,30 +202,36 @@ internal sealed partial class IlMethodTranslator
         return true;
     }
 
-    private static string BuildBodyConditionForCompareBranch(Code opcode, string left, string right)
+    private string BuildBodyConditionForCompareBranch(Code opcode, CppExpression left, CppExpression right)
     {
+        if (TryBuildSimplifiedCompareCondition(opcode, left, right, branchWhenTrue: false, out var simplified))
+            return simplified;
+
         return opcode switch
         {
-            Code.Beq or Code.Beq_S => $"({left} != {right})",
-            Code.Bne_Un or Code.Bne_Un_S => $"({left} == {right})",
-            Code.Bge or Code.Bge_S or Code.Bge_Un or Code.Bge_Un_S => $"({left} < {right})",
-            Code.Bgt or Code.Bgt_S or Code.Bgt_Un or Code.Bgt_Un_S => $"({left} <= {right})",
-            Code.Ble or Code.Ble_S or Code.Ble_Un or Code.Ble_Un_S => $"({left} > {right})",
-            Code.Blt or Code.Blt_S or Code.Blt_Un or Code.Blt_Un_S => $"({left} >= {right})",
+            Code.Beq or Code.Beq_S => $"({left.Code} != {right.Code})",
+            Code.Bne_Un or Code.Bne_Un_S => $"({left.Code} == {right.Code})",
+            Code.Bge or Code.Bge_S or Code.Bge_Un or Code.Bge_Un_S => $"({left.Code} < {right.Code})",
+            Code.Bgt or Code.Bgt_S or Code.Bgt_Un or Code.Bgt_Un_S => $"({left.Code} <= {right.Code})",
+            Code.Ble or Code.Ble_S or Code.Ble_Un or Code.Ble_Un_S => $"({left.Code} > {right.Code})",
+            Code.Blt or Code.Blt_S or Code.Blt_Un or Code.Blt_Un_S => $"({left.Code} >= {right.Code})",
             _ => throw new NotSupportedException($"Unsupported compare branch opcode {opcode}"),
         };
     }
 
-    private static string BuildLoopConditionForCompareBranch(Code opcode, string left, string right)
+    private string BuildLoopConditionForCompareBranch(Code opcode, CppExpression left, CppExpression right)
     {
+        if (TryBuildSimplifiedCompareCondition(opcode, left, right, branchWhenTrue: true, out var simplified))
+            return simplified;
+
         return opcode switch
         {
-            Code.Beq or Code.Beq_S => $"({left} == {right})",
-            Code.Bne_Un or Code.Bne_Un_S => $"({left} != {right})",
-            Code.Bge or Code.Bge_S or Code.Bge_Un or Code.Bge_Un_S => $"({left} >= {right})",
-            Code.Bgt or Code.Bgt_S or Code.Bgt_Un or Code.Bgt_Un_S => $"({left} > {right})",
-            Code.Ble or Code.Ble_S or Code.Ble_Un or Code.Ble_Un_S => $"({left} <= {right})",
-            Code.Blt or Code.Blt_S or Code.Blt_Un or Code.Blt_Un_S => $"({left} < {right})",
+            Code.Beq or Code.Beq_S => $"({left.Code} == {right.Code})",
+            Code.Bne_Un or Code.Bne_Un_S => $"({left.Code} != {right.Code})",
+            Code.Bge or Code.Bge_S or Code.Bge_Un or Code.Bge_Un_S => $"({left.Code} >= {right.Code})",
+            Code.Bgt or Code.Bgt_S or Code.Bgt_Un or Code.Bgt_Un_S => $"({left.Code} > {right.Code})",
+            Code.Ble or Code.Ble_S or Code.Ble_Un or Code.Ble_Un_S => $"({left.Code} <= {right.Code})",
+            Code.Blt or Code.Blt_S or Code.Blt_Un or Code.Blt_Un_S => $"({left.Code} < {right.Code})",
             _ => throw new NotSupportedException($"Unsupported loop compare branch opcode {opcode}"),
         };
     }
@@ -293,7 +299,7 @@ internal sealed partial class IlMethodTranslator
                 if (!TryGetBranchTargetIndex(instruction, sourceIndex, endIndex, out var targetIndex) || targetIndex != expectedTargetIndex)
                     return false;
 
-                positiveCondition = instruction.OpCode.Code is Code.Brfalse or Code.Brfalse_S ? Pop().Code : NegateCondition(Pop().Code);
+                positiveCondition = instruction.OpCode.Code is Code.Brfalse or Code.Brfalse_S ? MakeExplicitBooleanCheck(Pop().Code, invert: false) : MakeExplicitBooleanCheck(Pop().Code, invert: true);
                 return true;
             }
             case Code.Beq:
@@ -322,7 +328,7 @@ internal sealed partial class IlMethodTranslator
 
                 var right = Pop();
                 var left = Pop();
-                positiveCondition = BuildBodyConditionForCompareBranch(instruction.OpCode.Code, left.Code, right.Code);
+                positiveCondition = BuildBodyConditionForCompareBranch(instruction.OpCode.Code, left, right);
                 return true;
             }
             default:
@@ -386,11 +392,11 @@ internal sealed partial class IlMethodTranslator
         {
             case Code.Brtrue:
             case Code.Brtrue_S:
-                conditionExpression = Pop().Code;
+                conditionExpression = MakeExplicitBooleanCheck(Pop().Code, invert: false);
                 return true;
             case Code.Brfalse:
             case Code.Brfalse_S:
-                conditionExpression = NegateCondition(Pop().Code);
+                conditionExpression = MakeExplicitBooleanCheck(Pop().Code, invert: true);
                 return true;
             case Code.Beq:
             case Code.Beq_S:
@@ -415,7 +421,7 @@ internal sealed partial class IlMethodTranslator
             {
                 var right = Pop();
                 var left = Pop();
-                conditionExpression = BuildLoopConditionForCompareBranch(instruction.OpCode.Code, left.Code, right.Code);
+                conditionExpression = BuildLoopConditionForCompareBranch(instruction.OpCode.Code, left, right);
                 return true;
             }
             default:
@@ -444,9 +450,7 @@ internal sealed partial class IlMethodTranslator
         if (_instructions[index + 2].OpCode.Code is not (Code.Brtrue or Code.Brtrue_S or Code.Brfalse or Code.Brfalse_S))
             return false;
 
-        conditionExpression = Pop().Code;
-        if (_instructions[index + 2].OpCode.Code is Code.Brfalse or Code.Brfalse_S)
-            conditionExpression = NegateCondition(conditionExpression);
+        conditionExpression = _instructions[index + 2].OpCode.Code is Code.Brfalse or Code.Brfalse_S ? MakeExplicitBooleanCheck(Pop().Code, invert: true) : MakeExplicitBooleanCheck(Pop().Code, invert: false);
 
         return true;
     }

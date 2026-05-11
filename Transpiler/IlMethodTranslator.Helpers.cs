@@ -116,19 +116,19 @@ internal sealed partial class IlMethodTranslator
         if (!IsValueType(type))
             return true;
 
-        return type.MetadataType is
-            MetadataType.Boolean or
-            MetadataType.Byte or
-            MetadataType.SByte or
-            MetadataType.Int16 or
-            MetadataType.UInt16 or
-            MetadataType.Int32 or
-            MetadataType.UInt32 or
-            MetadataType.Int64 or
-            MetadataType.UInt64 or
-            MetadataType.Single or
-            MetadataType.Double or
-            MetadataType.Char;
+        return type.MetadataType
+            is MetadataType.Boolean
+                or MetadataType.Byte
+                or MetadataType.SByte
+                or MetadataType.Int16
+                or MetadataType.UInt16
+                or MetadataType.Int32
+                or MetadataType.UInt32
+                or MetadataType.Int64
+                or MetadataType.UInt64
+                or MetadataType.Single
+                or MetadataType.Double
+                or MetadataType.Char;
     }
 
     private static bool ShouldPredeclareLocal(TypeReference? type)

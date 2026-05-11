@@ -23,14 +23,10 @@ public static class TestMod
     public static string VersionStatusText { get; set; } = "Mod Active";
 
     [MenuButton("SampleMod", "Open the SampleMod menu")]
-    public static void OpenSampleMenu()
-    {
-    }
+    public static void OpenSampleMenu() { }
 
     [GameplaySetupTab("SampleMod", MenuType = BsmlMenuType.All)]
-    public static void OnGameplaySetupTabActivate(GameObject root, bool firstActivation)
-    {
-    }
+    public static void OnGameplaySetupTabActivate(GameObject root, bool firstActivation) { }
 
     [Hook(typeof(StandardLevelDetailViewController), nameof(StandardLevelDetailViewController.DidActivate), Phase = HookPhase.Prefix)]
     public static void OnLevelScreenActivatePrefix(StandardLevelDetailViewController self, bool firstActivation, bool addedToHierarchy, bool screenSystemEnabling)
