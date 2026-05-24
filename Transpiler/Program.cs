@@ -9,8 +9,10 @@ internal static class Program
     {
         if (!CommandLineOptions.TryParse(args, out var options, out var error))
         {
-            // Transpiler.exe --dir E:\Other\VS\CSharp\CSharp-Best-Saber-Quest-Mods\SampleMod E:\Other\VS\CSharp\CSharp-Best-Saber-Quest-Mods\quest-mod
-            // Transpiler.exe --dir E:\Other\VS\CSharp\CSharp-Best-Saber-Quest-Mods\PauseKey E:\Other\VS\CSharp\CSharp-Best-Saber-Quest-Mods\quest-mod
+            // Transpiler.exe --dir E:\Other\VS\CSharp\CSharp-Best-Saber-Quest-Mods\Tests\SampleMod E:\Other\VS\CSharp\CSharp-Best-Saber-Quest-Mods\quest-mod
+            // Transpiler.exe --dir E:\Other\VS\CSharp\CSharp-Best-Saber-Quest-Mods\Tests\PauseKey E:\Other\VS\CSharp\CSharp-Best-Saber-Quest-Mods\quest-mod
+            // Transpiler.exe --dir E:\Other\VS\CSharp\CSharp-Best-Saber-Quest-Mods\Tests\RegressionMod E:\Other\VS\CSharp\CSharp-Best-Saber-Quest-Mods\quest-mod
+            // Transpiler.exe --dir E:\Other\VS\CSharp\CSharp-Best-Saber-Quest-Mods\Tests\CustomFloorPluginQuest E:\Other\VS\CSharp\CSharp-Best-Saber-Quest-Mods\quest-mod
             Console.Error.WriteLine(error);
             PrintUsage();
             return 1;

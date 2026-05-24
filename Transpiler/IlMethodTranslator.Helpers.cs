@@ -10,7 +10,7 @@ internal sealed partial class IlMethodTranslator
 {
     private TranslationSnapshot CaptureSnapshot()
     {
-        return new TranslationSnapshot(_stack.ToArray(), Statements.Count, _declaredLocals.OrderBy(index => index).ToArray());
+        return new TranslationSnapshot(_stack.ToArray(), Statements.Count, _declaredLocals.OrderBy(index => index).ToArray(), _recentLocalValues.ToArray());
     }
 
     private void RestoreSnapshot(TranslationSnapshot snapshot)
@@ -25,6 +25,10 @@ internal sealed partial class IlMethodTranslator
         _declaredLocals.Clear();
         foreach (var localIndex in snapshot.DeclaredLocals)
             _declaredLocals.Add(localIndex);
+
+        _recentLocalValues.Clear();
+        foreach (var entry in snapshot.RecentLocalValues)
+            _recentLocalValues[entry.Key] = entry.Value;
     }
 
     private CppExpression Pop()
@@ -212,6 +216,21 @@ internal sealed partial class IlMethodTranslator
                 argumentIndex = -1;
                 return false;
         }
+    }
+
+    private bool TryGetImmediateStoredLocalValue(int branchInstructionIndex, out CppExpression expression)
+    {
+        expression = null!;
+        if (branchInstructionIndex < 2)
+            return false;
+
+        if (!TryGetLoadedLocalIndex(_instructions[branchInstructionIndex - 1], out var loadedLocalIndex))
+            return false;
+
+        if (!TryGetLocalIndex(_instructions[branchInstructionIndex - 2], out var storedLocalIndex) || storedLocalIndex != loadedLocalIndex)
+            return false;
+
+        return _recentLocalValues.TryGetValue(storedLocalIndex, out expression!);
     }
 
     private static Dictionary<int, string> BuildLocalNameMap(MethodDefinition method)

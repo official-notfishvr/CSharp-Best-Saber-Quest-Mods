@@ -48,6 +48,11 @@ public sealed class ModAttribute : Attribute
     }
 }
 
+[AttributeUsage(AttributeTargets.Class)]
+public sealed class CustomTypeAttribute : Attribute
+{
+}
+
 [AttributeUsage(AttributeTargets.Field | AttributeTargets.Property)]
 public sealed class ConfigAttribute : Attribute
 {

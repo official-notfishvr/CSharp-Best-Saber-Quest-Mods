@@ -11,4 +11,4 @@
 
 Configuration &getConfig();
 
-constexpr auto PaperLogger = Paper::ConstLoggerContext("com.csharp.quest.pausekey");
+constexpr auto PaperLogger = Paper::ConstLoggerContext("com.csharp.quest.customplatforms");

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
 
@@ -22,6 +23,7 @@ internal sealed class Transpiler
     private readonly List<HookDefinition> _hooks = new();
     private readonly List<ConfigEntry> _configValues = new();
     private readonly List<LocalStaticFieldEntry> _localStaticFields = new();
+    private readonly List<CustomTypeEntry> _customTypes = new();
     private readonly List<MethodDefinition> _helperMethods = new();
     private readonly List<MenuButtonRegistration> _menuButtons = new();
     private readonly List<GameplaySetupTabRegistration> _gameplaySetupTabs = new();
@@ -76,6 +78,7 @@ internal sealed class Transpiler
         LoadModMetadata(type);
         LoadConfigs(type);
         LoadLocalStaticFields(type);
+        LoadCustomType(type);
         LoadHooks(type);
         LoadBsmlRegistrations(type);
         LoadHelperMethods(type);
@@ -332,6 +335,13 @@ internal sealed class Transpiler
                 AddInclude(includeSet, include);
         }
 
+        foreach (var customType in _customTypes)
+        {
+            AddInclude(includeSet, _typeSystem.GetIncludePath(customType.Type.BaseType));
+            foreach (var field in customType.Type.Fields)
+                AddInclude(includeSet, _typeSystem.GetIncludePath(field.FieldType));
+        }
+
         foreach (var generator in bodyGenerators.Values)
         {
             foreach (var include in generator.RequiredIncludes)
@@ -355,6 +365,11 @@ internal sealed class Transpiler
         var writer = new CppCodeWriter();
         writer.WriteLine("#include \"main.hpp\"");
         writer.WriteLine("#include \"scotland2/shared/modloader.h\"");
+        if (_customTypes.Count > 0)
+        {
+            writer.WriteLine("#include \"custom-types/shared/register.hpp\"");
+            writer.WriteLine("#include \"custom-types/shared/macros.hpp\"");
+        }
         writer.WriteLine();
 
         foreach (var include in includeSet.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
@@ -373,6 +388,12 @@ internal sealed class Transpiler
 
         if (_localStaticFields.Count > 0)
             writer.WriteLine();
+
+        if (_customTypes.Count > 0)
+        {
+            WriteCustomTypes(writer);
+            writer.WriteLine();
+        }
 
         writer.WriteLine("Configuration &getConfig() {");
         writer.WriteLine("    static Configuration config(modInfo);");
@@ -402,6 +423,8 @@ internal sealed class Transpiler
 
         writer.WriteLine("MOD_EXTERN_FUNC void late_load() noexcept {");
         writer.WriteLine("    il2cpp_functions::Init();");
+        if (_customTypes.Count > 0)
+            writer.WriteLine("    custom_types::Register::AutoRegister();");
 
         if (_menuButtons.Count > 0 || _gameplaySetupTabs.Count > 0)
         {
@@ -427,6 +450,19 @@ internal sealed class Transpiler
         writer.WriteLine("}");
 
         WriteOutputFile(outputDirectory, Path.Combine("src", "main.cpp"), NormalizeGeneratedSource(writer.ToString()));
+    }
+
+    private void WriteCustomTypes(CppCodeWriter writer)
+    {
+        foreach (var customType in _customTypes)
+        {
+            writer.WriteLine($"DECLARE_CLASS_CODEGEN_DLL({customType.CppNamespace}, {customType.CppName}, {customType.BaseCppType}, \"{customType.DllName}\") {{");
+            writer.WriteLine("    DECLARE_DEFAULT_CTOR();");
+            foreach (var field in customType.Fields)
+                writer.WriteLine($"    DECLARE_INSTANCE_FIELD({field.CppType}, {field.Name});");
+            writer.WriteLine("};");
+            writer.WriteLine();
+        }
     }
 
     private static string MapBsmlMenuType(int value)
@@ -554,6 +590,8 @@ internal sealed class Transpiler
 
     private static bool IsConfigAttribute(CustomAttribute attribute) => attribute.AttributeType.Name is "ConfigAttribute" or "Config";
 
+    private static bool IsCustomTypeAttribute(CustomAttribute attribute) => attribute.AttributeType.Name is "CustomTypeAttribute" or "CustomType";
+
     private static bool IsMenuButtonAttribute(CustomAttribute attribute) => attribute.AttributeType.Name is "MenuButtonAttribute" or "MenuButton";
 
     private static bool IsGameplaySetupTabAttribute(CustomAttribute attribute) => attribute.AttributeType.Name is "GameplaySetupTabAttribute" or "GameplaySetupTab";
@@ -609,6 +647,45 @@ internal sealed class Transpiler
                 }
             );
         }
+    }
+
+    private void LoadCustomType(TypeDefinition type)
+    {
+        if (!type.CustomAttributes.Any(IsCustomTypeAttribute))
+            return;
+
+        if (type.BaseType == null)
+            throw new InvalidOperationException($"[CustomType] requires a base type: {type.FullName}");
+
+        var fields = new List<CustomTypeFieldEntry>();
+        foreach (var field in type.Fields)
+        {
+            if (field.IsStatic || field.IsLiteral || field.Name.StartsWith("<", StringComparison.Ordinal))
+                continue;
+
+            if (!field.IsPublic && !field.CustomAttributes.Any(attribute => attribute.AttributeType.Name == "SerializeField"))
+                continue;
+
+            fields.Add(
+                new CustomTypeFieldEntry
+                {
+                    Name = field.Name,
+                    CppType = _typeSystem.MapType(field.FieldType),
+                }
+            );
+        }
+
+        _customTypes.Add(
+            new CustomTypeEntry
+            {
+                Type = type,
+                CppNamespace = _typeSystem.MapNamespace(type.Namespace),
+                CppName = _typeSystem.ComposeTypeName(type),
+                BaseCppType = _typeSystem.MapType(type.BaseType).TrimEnd('*'),
+                DllName = _module?.Assembly.Name.Name ?? type.Module.Assembly.Name.Name,
+                Fields = fields,
+            }
+        );
     }
 
     private void LoadBsmlRegistrations(TypeDefinition type)
@@ -985,7 +1062,124 @@ internal sealed class Transpiler
             lines[i] = $"{indent}{lhs} = ::il2cpp_utils::NewSpecific<decltype({lhs})>({args});";
         }
 
-        return string.Join(Environment.NewLine, lines);
+        for (var i = 0; i < lines.Length; i++)
+        {
+            lines[i] = Regex.Replace(lines[i], @"\(\(([^()]+)\)\)", "($1)");
+            lines[i] = Regex.Replace(lines[i], @"if \(\(([^()]+)\)\)", "if ($1)");
+        }
+
+        var sourceText = string.Join("\n", lines);
+        sourceText = SimplifyFunctionLocalTemps(sourceText);
+
+        sourceText = Regex.Replace(sourceText, @"(\r?\n){3,}", Environment.NewLine + Environment.NewLine);
+        return sourceText.Replace("\n", Environment.NewLine, StringComparison.Ordinal);
+    }
+
+    private static string SimplifyFunctionLocalTemps(string sourceText)
+    {
+        var lines = sourceText.Split('\n').ToList();
+        var functionStartRegex = new Regex(@"\)\s*\{\s*$", RegexOptions.Compiled);
+
+        for (var i = 0; i < lines.Count; i++)
+        {
+            if (!functionStartRegex.IsMatch(lines[i]))
+                continue;
+
+            var start = i;
+            var depth = CountBraces(lines[i]);
+            var end = i;
+            while (depth > 0 && end + 1 < lines.Count)
+            {
+                end++;
+                depth += CountBraces(lines[end]);
+            }
+
+            var block = string.Join("\n", lines.Skip(start).Take(end - start + 1));
+            var simplified = SimplifySingleFunctionBlock(block).Split('\n');
+            lines.RemoveRange(start, end - start + 1);
+            lines.InsertRange(start, simplified);
+            i = start + simplified.Length - 1;
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    private static string SimplifySingleFunctionBlock(string block)
+    {
+        var inlineIfRegex = new Regex(@"^(?<assignIndent>\s*)(?<name>local\d+(?:_\d+)?) = (?<expr>.+);\r?\n(?<ifIndent>\s*)if \((?:\()?(?<condition>\k<name>)(?:\))?\)", RegexOptions.Multiline);
+        block = inlineIfRegex.Replace(block, match =>
+        {
+            var localName = match.Groups["name"].Value;
+            var usageCount = Regex.Matches(block, $@"\b{Regex.Escape(localName)}\b").Count;
+            return usageCount == 3 ? $"{match.Groups["ifIndent"].Value}if ({match.Groups["expr"].Value})" : match.Value;
+        });
+
+        var duplicateExprIfRegex = new Regex(@"^(?<assignIndent>\s*)(?<name>local\d+(?:_\d+)?) = (?<expr>.+);\r?\n(?<ifIndent>\s*)if \((?:\()?(?<condition>\k<expr>)(?:\))?\)", RegexOptions.Multiline);
+        block = duplicateExprIfRegex.Replace(block, match =>
+        {
+            var localName = match.Groups["name"].Value;
+            var usageCount = Regex.Matches(block, $@"\b{Regex.Escape(localName)}\b").Count;
+            return usageCount == 2 ? $"{match.Groups["ifIndent"].Value}if ({match.Groups["expr"].Value})" : match.Value;
+        });
+
+        var wrappedDuplicateExprIfRegex = new Regex(@"^(?<assignIndent>\s*)(?<name>local\d+(?:_\d+)?) = \((?<expr>.+)\);\r?\n(?<ifIndent>\s*)if \((?:\()?(?<condition>\k<expr>)(?:\))?\)", RegexOptions.Multiline);
+        block = wrappedDuplicateExprIfRegex.Replace(block, match =>
+        {
+            var localName = match.Groups["name"].Value;
+            var usageCount = Regex.Matches(block, $@"\b{Regex.Escape(localName)}\b").Count;
+            return usageCount == 2 ? $"{match.Groups["ifIndent"].Value}if ({match.Groups["expr"].Value})" : match.Value;
+        });
+
+        var inlineReturnRegex = new Regex(@"^(?<assignIndent>\s*)(?<name>local\d+(?:_\d+)?) = (?<expr>.+);\r?\n(?<returnIndent>\s*)return (?<returnName>\k<name>);", RegexOptions.Multiline);
+        block = inlineReturnRegex.Replace(block, match =>
+        {
+            var localName = match.Groups["name"].Value;
+            var usageCount = Regex.Matches(block, $@"\b{Regex.Escape(localName)}\b").Count;
+            return usageCount == 3 ? $"{match.Groups["returnIndent"].Value}return {match.Groups["expr"].Value};" : match.Value;
+        });
+
+        var localAssignmentRegex = new Regex(@"^(?<indent>\s*)(?<name>local\d+(?:_\d+)?) = (?<expr>.+);\s*$", RegexOptions.Multiline);
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+            block = localAssignmentRegex.Replace(block, match =>
+            {
+                var localName = match.Groups["name"].Value;
+                var usageCount = Regex.Matches(block, $@"\b{Regex.Escape(localName)}\b").Count;
+                if (usageCount == 2)
+                {
+                    changed = true;
+                    return string.Empty;
+                }
+
+                return match.Value;
+            });
+        }
+
+        var localDeclarationRegex = new Regex(@"^(?<indent>\s*)(?<type>[\w:<>]+(?:\s*[*&])?)\s+(?<name>local\d+(?:_\d+)?)\{\};\s*$", RegexOptions.Multiline);
+        block = localDeclarationRegex.Replace(block, match =>
+        {
+            var localName = match.Groups["name"].Value;
+            var usageCount = Regex.Matches(block, $@"\b{Regex.Escape(localName)}\b").Count;
+            return usageCount <= 1 ? string.Empty : match.Value;
+        });
+
+        return block;
+    }
+
+    private static int CountBraces(string line)
+    {
+        var depth = 0;
+        foreach (var ch in line)
+        {
+            if (ch == '{')
+                depth++;
+            else if (ch == '}')
+                depth--;
+        }
+
+        return depth;
     }
 
     private static string BuildHookGroupKey(HookDefinition hook)
@@ -1039,6 +1233,9 @@ internal sealed class Transpiler
 
     private static bool IsTranspilerRelevantType(TypeDefinition type)
     {
+        if (type.CustomAttributes.Any(IsCustomTypeAttribute))
+            return true;
+
         if (type.CustomAttributes.Any(IsModAttribute))
             return true;
 

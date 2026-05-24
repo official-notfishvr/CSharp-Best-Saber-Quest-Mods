@@ -5,7 +5,7 @@
 
 #include "beatsaber-hook/shared/utils/il2cpp-utils.hpp"
 
-static bool Enabled = true;
-static int32_t PauseBinding = 0;
-static float TriggerThreshold = 0.75;
-static float ThumbstickThreshold = 0.85;
+static ::StringW PlatformDirectory = il2cpp_utils::newcsstr("/sdcard/ModData/com.beatgames.beatsaber/Mods/CustomPlatforms");
+static ::StringW MenuPlatformPath = il2cpp_utils::newcsstr("");
+static ::StringW GameplayPlatformPath = il2cpp_utils::newcsstr("");
+static ::StringW MultiplayerPlatformPath = il2cpp_utils::newcsstr("");

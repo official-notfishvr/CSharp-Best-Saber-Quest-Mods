@@ -9,7 +9,7 @@ namespace Transpiler;
 
 internal sealed partial class IlMethodTranslator
 {
-    private readonly record struct TranslationSnapshot(CppExpression[] StackValues, int LineCount, int[] DeclaredLocals);
+    private readonly record struct TranslationSnapshot(CppExpression[] StackValues, int LineCount, int[] DeclaredLocals, KeyValuePair<int, CppExpression>[] RecentLocalValues);
 
     private readonly Dictionary<int, string> _localNames;
     private readonly Dictionary<int, string> _parameterNames;
@@ -22,6 +22,7 @@ internal sealed partial class IlMethodTranslator
     private readonly Stack<Dictionary<int, string>> _continueLabelScopes = new();
     private readonly Stack<HashSet<int>> _breakTargetScopes = new();
     private readonly HashSet<int> _declaredLocals = new();
+    private readonly Dictionary<int, CppExpression> _recentLocalValues = new();
     private readonly List<string> _temporaryDeclarations = new();
     private readonly Stack<CppExpression> _stack = new();
     private readonly TypeMetadataIndex _metadataIndex;
@@ -126,14 +127,21 @@ internal sealed partial class IlMethodTranslator
         var result = new Dictionary<int, string>();
         foreach (var instruction in _instructions)
         {
-            if (instruction.Operand is not Instruction targetInstruction)
-                continue;
+            switch (instruction.Operand)
+            {
+                case Instruction targetInstruction:
+                    if (_instructionIndices.TryGetValue(targetInstruction, out var targetIndex) && !result.ContainsKey(targetIndex))
+                        result[targetIndex] = $"label_{targetIndex}";
+                    break;
+                case Instruction[] switchTargets:
+                    foreach (var switchTarget in switchTargets)
+                    {
+                        if (_instructionIndices.TryGetValue(switchTarget, out var switchTargetIndex) && !result.ContainsKey(switchTargetIndex))
+                            result[switchTargetIndex] = $"label_{switchTargetIndex}";
+                    }
 
-            if (!_instructionIndices.TryGetValue(targetInstruction, out var targetIndex))
-                continue;
-
-            if (!result.ContainsKey(targetIndex))
-                result[targetIndex] = $"label_{targetIndex}";
+                    break;
+            }
         }
 
         return result;

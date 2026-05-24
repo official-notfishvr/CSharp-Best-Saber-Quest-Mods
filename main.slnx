@@ -1,7 +1,9 @@
 <Solution>
     <Project Path="CoreMod/CoreMod.csproj" />
-    <Project Path="PauseKey/PauseKey.csproj" />
-    <Project Path="SampleMod/SampleMod.csproj" />
     <Project Path="Transpiler/Transpiler.csproj" />
     <Project Path="TypeGenerator/TypeGenerator.csproj" />
+    <Project Path="Tests/CustomFloorPluginQuest/CustomFloorPlugin.csproj" />
+    <Project Path="Tests/PauseKey/PauseKey.csproj" />
+    <Project Path="Tests/RegressionMod/RegressionMod.csproj" />
+    <Project Path="Tests/SampleMod/SampleMod.csproj" />
 </Solution>

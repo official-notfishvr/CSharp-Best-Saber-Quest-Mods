@@ -36,6 +36,22 @@ internal sealed class LocalStaticFieldEntry
     public string? DefaultValueCpp { get; init; }
 }
 
+internal sealed class CustomTypeEntry
+{
+    public required TypeDefinition Type { get; init; }
+    public required string CppNamespace { get; init; }
+    public required string CppName { get; init; }
+    public required string BaseCppType { get; init; }
+    public required string DllName { get; init; }
+    public required List<CustomTypeFieldEntry> Fields { get; init; }
+}
+
+internal sealed class CustomTypeFieldEntry
+{
+    public required string Name { get; init; }
+    public required string CppType { get; init; }
+}
+
 internal enum HookPhase
 {
     Full = 0,

@@ -20,12 +20,6 @@ internal sealed partial class IlMethodTranslator
                 continue;
             }
 
-            if (TryEmitStructuredIfFromLocalTemp(index, endIndex, indentLevel, out consumedUntil))
-            {
-                index = consumedUntil - 1;
-                continue;
-            }
-
             if (TryEmitStructuredIf(instruction, index, endIndex, indentLevel, out consumedUntil))
             {
                 index = consumedUntil - 1;
@@ -37,33 +31,6 @@ internal sealed partial class IlMethodTranslator
             if (instruction.OpCode.Code is Code.Br or Code.Br_S or Code.Leave or Code.Leave_S && TryBuildReturnFromBranchTarget((Instruction)instruction.Operand, out _))
                 break;
         }
-    }
-
-    private bool TryEmitStructuredIfFromLocalTemp(int index, int endIndex, int indentLevel, out int consumedUntil)
-    {
-        consumedUntil = index;
-        if (index + 2 >= endIndex)
-            return false;
-
-        if (!TryGetLocalIndex(_instructions[index], out var storedLocalIndex))
-            return false;
-
-        var next = _instructions[index + 1];
-        if (!TryGetLoadedLocalIndex(next, out var loadedLocalIndex) || loadedLocalIndex != storedLocalIndex)
-            return false;
-
-        var branch = _instructions[index + 2];
-        if (branch.OpCode.Code is not (Code.Brfalse or Code.Brfalse_S or Code.Brtrue or Code.Brtrue_S))
-            return false;
-
-        if (!TryGetBranchTargetIndex(branch, index + 2, endIndex, out var targetIndex))
-            return false;
-
-        EmitInstruction(_instructions[index], indentLevel);
-        var bodyStartIndex = index + 3;
-        var positiveCondition = branch.OpCode.Code is Code.Brfalse or Code.Brfalse_S ? MakeExplicitBooleanCheck(GetLocalName(storedLocalIndex), invert: false) : MakeExplicitBooleanCheck(GetLocalName(storedLocalIndex), invert: true);
-        positiveCondition = ExtendConditionChain(positiveCondition, ref bodyStartIndex, targetIndex, endIndex);
-        return TryEmitStructuredConditionalBlock(positiveCondition, bodyStartIndex, targetIndex, endIndex, indentLevel, out consumedUntil);
     }
 
     private bool TryEmitStructuredLoop(Instruction instruction, int index, int endIndex, int indentLevel, out int consumedUntil)
@@ -124,7 +91,17 @@ internal sealed partial class IlMethodTranslator
                     return false;
 
                 var bodyStartIndex = index + 1;
-                var positiveCondition = instruction.OpCode.Code is Code.Brfalse or Code.Brfalse_S ? MakeExplicitBooleanCheck(Pop().Code, invert: false) : MakeExplicitBooleanCheck(Pop().Code, invert: true);
+                string conditionValue;
+                if (TryGetImmediateStoredLocalValue(index, out var storedExpression))
+                {
+                    Pop();
+                    conditionValue = storedExpression.Code;
+                }
+                else
+                {
+                    conditionValue = Pop().Code;
+                }
+                var positiveCondition = instruction.OpCode.Code is Code.Brfalse or Code.Brfalse_S ? MakeExplicitBooleanCheck(conditionValue, invert: false) : MakeExplicitBooleanCheck(conditionValue, invert: true);
                 positiveCondition = ExtendConditionChain(positiveCondition, ref bodyStartIndex, targetIndex, endIndex);
                 return TryEmitStructuredConditionalBlock(positiveCondition, bodyStartIndex, targetIndex, endIndex, indentLevel, out consumedUntil);
             }
@@ -300,7 +277,17 @@ internal sealed partial class IlMethodTranslator
                 if (!TryGetBranchTargetIndex(instruction, sourceIndex, endIndex, out var targetIndex) || targetIndex != expectedTargetIndex)
                     return false;
 
-                positiveCondition = instruction.OpCode.Code is Code.Brfalse or Code.Brfalse_S ? MakeExplicitBooleanCheck(Pop().Code, invert: false) : MakeExplicitBooleanCheck(Pop().Code, invert: true);
+                string conditionValue;
+                if (TryGetImmediateStoredLocalValue(sourceIndex, out var storedExpression))
+                {
+                    Pop();
+                    conditionValue = storedExpression.Code;
+                }
+                else
+                {
+                    conditionValue = Pop().Code;
+                }
+                positiveCondition = instruction.OpCode.Code is Code.Brfalse or Code.Brfalse_S ? MakeExplicitBooleanCheck(conditionValue, invert: false) : MakeExplicitBooleanCheck(conditionValue, invert: true);
                 return true;
             }
             case Code.Beq:
@@ -349,15 +336,6 @@ internal sealed partial class IlMethodTranslator
             for (var index = conditionStartIndex; index < endIndex; index++)
             {
                 var instruction = _instructions[index];
-                if (TryReadLoopBackConditionFromLocalTemp(index, bodyStartIndex, endIndex, out conditionExpression))
-                {
-                    if (Statements.Count != initialLineCount)
-                        return false;
-
-                    loopBranchIndex = index + 2;
-                    return true;
-                }
-
                 if (IsLoopBackBranch(instruction, bodyStartIndex, endIndex, out conditionExpression))
                 {
                     if (Statements.Count != initialLineCount)
@@ -393,11 +371,31 @@ internal sealed partial class IlMethodTranslator
         {
             case Code.Brtrue:
             case Code.Brtrue_S:
-                conditionExpression = MakeExplicitBooleanCheck(Pop().Code, invert: false);
+                string trueConditionValue;
+                if (TryGetImmediateStoredLocalValue(_instructionIndices[instruction], out var storedTrueExpression))
+                {
+                    Pop();
+                    trueConditionValue = storedTrueExpression.Code;
+                }
+                else
+                {
+                    trueConditionValue = Pop().Code;
+                }
+                conditionExpression = MakeExplicitBooleanCheck(trueConditionValue, invert: false);
                 return true;
             case Code.Brfalse:
             case Code.Brfalse_S:
-                conditionExpression = MakeExplicitBooleanCheck(Pop().Code, invert: true);
+                string falseConditionValue;
+                if (TryGetImmediateStoredLocalValue(_instructionIndices[instruction], out var storedFalseExpression))
+                {
+                    Pop();
+                    falseConditionValue = storedFalseExpression.Code;
+                }
+                else
+                {
+                    falseConditionValue = Pop().Code;
+                }
+                conditionExpression = MakeExplicitBooleanCheck(falseConditionValue, invert: true);
                 return true;
             case Code.Beq:
             case Code.Beq_S:
@@ -428,33 +426,6 @@ internal sealed partial class IlMethodTranslator
             default:
                 return false;
         }
-    }
-
-    private bool TryReadLoopBackConditionFromLocalTemp(int index, int bodyStartIndex, int endIndex, out string conditionExpression)
-    {
-        conditionExpression = "";
-        if (index + 2 >= endIndex)
-            return false;
-
-        if (!TryGetLocalIndex(_instructions[index], out var storedLocalIndex))
-            return false;
-
-        if (!TryGetLoadedLocalIndex(_instructions[index + 1], out var loadedLocalIndex) || loadedLocalIndex != storedLocalIndex)
-            return false;
-
-        if (_instructions[index + 2].Operand is not Instruction targetInstruction)
-            return false;
-
-        if (!_instructionIndices.TryGetValue(targetInstruction, out var targetIndex) || targetIndex != bodyStartIndex)
-            return false;
-
-        if (_instructions[index + 2].OpCode.Code is not (Code.Brtrue or Code.Brtrue_S or Code.Brfalse or Code.Brfalse_S))
-            return false;
-
-        Pop();
-        conditionExpression = _instructions[index + 2].OpCode.Code is Code.Brfalse or Code.Brfalse_S ? MakeExplicitBooleanCheck(GetLocalName(storedLocalIndex), invert: true) : MakeExplicitBooleanCheck(GetLocalName(storedLocalIndex), invert: false);
-
-        return true;
     }
 
     private int FindLoopIncrementStart(int bodyStartIndex, int conditionStartIndex)

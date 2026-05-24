@@ -139,6 +139,22 @@ internal sealed partial class IlMethodTranslator
             case Code.Ldelem_U4:
                 EmitLoadElement(null, instruction.OpCode.Code);
                 return;
+            case Code.Ldind_I:
+            case Code.Ldind_I1:
+            case Code.Ldind_I2:
+            case Code.Ldind_I4:
+            case Code.Ldind_I8:
+            case Code.Ldind_R4:
+            case Code.Ldind_R8:
+            case Code.Ldind_U1:
+            case Code.Ldind_U2:
+            case Code.Ldind_U4:
+            case Code.Ldind_Ref:
+                EmitLoadIndirect(null, instruction.OpCode.Code);
+                return;
+            case Code.Ldobj:
+                EmitLoadIndirect((TypeReference)instruction.Operand, instruction.OpCode.Code);
+                return;
             case Code.Stelem_Any:
                 EmitStoreElement((TypeReference)instruction.Operand, instruction.OpCode.Code, indentLevel);
                 return;
@@ -152,6 +168,19 @@ internal sealed partial class IlMethodTranslator
             case Code.Stelem_R8:
                 EmitStoreElement(null, instruction.OpCode.Code, indentLevel);
                 return;
+            case Code.Stind_I:
+            case Code.Stind_I1:
+            case Code.Stind_I2:
+            case Code.Stind_I4:
+            case Code.Stind_I8:
+            case Code.Stind_R4:
+            case Code.Stind_R8:
+            case Code.Stind_Ref:
+                EmitStoreIndirect(null, instruction.OpCode.Code, indentLevel);
+                return;
+            case Code.Stobj:
+                EmitStoreIndirect((TypeReference)instruction.Operand, instruction.OpCode.Code, indentLevel);
+                return;
             case Code.Call:
             case Code.Callvirt:
                 EmitCall((MethodReference)instruction.Operand, indentLevel);
@@ -159,6 +188,13 @@ internal sealed partial class IlMethodTranslator
             case Code.Newobj:
                 EmitNewObject((MethodReference)instruction.Operand);
                 return;
+            case Code.Switch:
+                if (_useGotoFlow)
+                {
+                    AppendSwitchGoto((Instruction[])instruction.Operand, indentLevel);
+                    return;
+                }
+                break;
             case Code.Brfalse:
             case Code.Brfalse_S:
                 if (_useGotoFlow)
@@ -333,16 +369,48 @@ internal sealed partial class IlMethodTranslator
             case Code.Initobj:
                 EmitInitObject((TypeReference)instruction.Operand, indentLevel);
                 return;
+            case Code.Volatile:
+            case Code.Readonly:
+            case Code.Constrained:
+            case Code.Unaligned:
+            case Code.Tail:
+                return;
+            case Code.Endfinally:
+            case Code.Endfilter:
+                return;
             case Code.Conv_I1:
             case Code.Conv_I2:
             case Code.Conv_I4:
+            case Code.Conv_I:
             case Code.Conv_I8:
             case Code.Conv_U1:
             case Code.Conv_U2:
             case Code.Conv_U4:
+            case Code.Conv_U:
             case Code.Conv_U8:
             case Code.Conv_R4:
             case Code.Conv_R8:
+            case Code.Conv_R_Un:
+            case Code.Conv_Ovf_I:
+            case Code.Conv_Ovf_I_Un:
+            case Code.Conv_Ovf_I1:
+            case Code.Conv_Ovf_I1_Un:
+            case Code.Conv_Ovf_I2:
+            case Code.Conv_Ovf_I2_Un:
+            case Code.Conv_Ovf_I4:
+            case Code.Conv_Ovf_I4_Un:
+            case Code.Conv_Ovf_I8:
+            case Code.Conv_Ovf_I8_Un:
+            case Code.Conv_Ovf_U:
+            case Code.Conv_Ovf_U_Un:
+            case Code.Conv_Ovf_U1:
+            case Code.Conv_Ovf_U1_Un:
+            case Code.Conv_Ovf_U2:
+            case Code.Conv_Ovf_U2_Un:
+            case Code.Conv_Ovf_U4:
+            case Code.Conv_Ovf_U4_Un:
+            case Code.Conv_Ovf_U8:
+            case Code.Conv_Ovf_U8_Un:
                 EmitConversion(instruction.OpCode.Code);
                 return;
             default:
@@ -365,7 +433,7 @@ internal sealed partial class IlMethodTranslator
             new CppExpression
             {
                 Code = GetArgumentName(parameterIndex),
-                Type = parameter.ParameterType,
+                Type = new ByReferenceType(parameter.ParameterType),
                 PreferAutoDeclaration = true,
             }
         );
@@ -386,7 +454,7 @@ internal sealed partial class IlMethodTranslator
             new CppExpression
             {
                 Code = GetLocalName(index),
-                Type = variable.VariableType,
+                Type = new ByReferenceType(variable.VariableType),
                 PreferAutoDeclaration = true,
             }
         );
@@ -397,6 +465,7 @@ internal sealed partial class IlMethodTranslator
         var variable = _method.Body!.Variables[index];
         var value = NormalizeAssignedValue(Pop(), variable.VariableType, GetLocalName(index));
         var name = GetLocalName(index);
+        _recentLocalValues[index] = value;
 
         if (_declaredLocals.Add(index))
         {
@@ -423,20 +492,20 @@ internal sealed partial class IlMethodTranslator
 
         if (isStatic && _configByField.TryGetValue(BuildConfigAccessorKey(field.DeclaringType.FullName, field.Name), out var config))
         {
-            _stack.Push(new CppExpression { Code = config.CppIdentifier, Type = config.Type });
+            _stack.Push(new CppExpression { Code = config.CppIdentifier, Type = asAddress ? new ByReferenceType(config.Type) : config.Type });
             return;
         }
 
         if (isStatic && _localStaticFieldsByField.TryGetValue(BuildConfigAccessorKey(field.DeclaringType.FullName, field.Name), out var localStaticField))
         {
-            _stack.Push(new CppExpression { Code = localStaticField.CppIdentifier, Type = localStaticField.Type });
+            _stack.Push(new CppExpression { Code = localStaticField.CppIdentifier, Type = asAddress ? new ByReferenceType(localStaticField.Type) : localStaticField.Type });
             return;
         }
 
         if (isStatic)
         {
             var declaringType = $"{_typeSystem.MapNamespace(field.DeclaringType.Namespace)}::{_typeSystem.ComposeTypeName(field.DeclaringType)}";
-            _stack.Push(new CppExpression { Code = $"{declaringType}::{field.Name}", Type = field.FieldType });
+            _stack.Push(new CppExpression { Code = $"{declaringType}::{field.Name}", Type = asAddress ? new ByReferenceType(field.FieldType) : field.FieldType });
             return;
         }
 
@@ -446,7 +515,7 @@ internal sealed partial class IlMethodTranslator
             new CppExpression
             {
                 Code = $"{target.Code}{GetMemberAccessOperator(target.Type)}{fieldName}",
-                Type = field.FieldType,
+                Type = asAddress ? new ByReferenceType(field.FieldType) : field.FieldType,
                 PreferAutoDeclaration = !asAddress,
             }
         );
@@ -524,7 +593,7 @@ internal sealed partial class IlMethodTranslator
         _stack.Push(
             new CppExpression
             {
-                Code = $"&({array.Code}[{index.Code}])",
+                Code = $"{array.Code}[{index.Code}]",
                 Type = new ByReferenceType(elementType),
                 PreferAutoDeclaration = true,
             }
@@ -561,6 +630,34 @@ internal sealed partial class IlMethodTranslator
         AppendLine(indentLevel, $"{array.Code}[{index.Code}] = {value.Code};");
     }
 
+    private void EmitLoadIndirect(TypeReference? elementType, Code opcode)
+    {
+        var address = Pop();
+        var resolvedElementType = elementType ?? ResolveIndirectTypeFromOpcode(opcode, address.Type);
+        if (resolvedElementType != null)
+            RequiredInclude(resolvedElementType);
+
+        _stack.Push(
+            new CppExpression
+            {
+                Code = BuildIndirectAccess(address),
+                Type = resolvedElementType,
+                PreferAutoDeclaration = true,
+            }
+        );
+    }
+
+    private void EmitStoreIndirect(TypeReference? elementType, Code opcode, int indentLevel)
+    {
+        var value = Pop();
+        var address = Pop();
+        var resolvedElementType = elementType ?? ResolveIndirectTypeFromOpcode(opcode, address.Type);
+        if (resolvedElementType != null)
+            RequiredInclude(resolvedElementType);
+
+        AppendLine(indentLevel, $"{BuildIndirectAccess(address)} = {value.Code};");
+    }
+
     private TypeReference? ResolveElementTypeFromOpcode(Code opcode)
     {
         var types = _method.Module.TypeSystem;
@@ -579,6 +676,37 @@ internal sealed partial class IlMethodTranslator
             Code.Ldelem_Ref or Code.Stelem_Ref => types.Object,
             _ => null,
         };
+    }
+
+    private TypeReference? ResolveIndirectTypeFromOpcode(Code opcode, TypeReference? addressType)
+    {
+        if (addressType is ByReferenceType byReferenceType)
+            return byReferenceType.ElementType;
+
+        if (addressType is PointerType pointerType)
+            return pointerType.ElementType;
+
+        var types = _method.Module.TypeSystem;
+        return opcode switch
+        {
+            Code.Ldind_I1 or Code.Stind_I1 => types.SByte,
+            Code.Ldind_U1 => types.Byte,
+            Code.Ldind_I2 or Code.Stind_I2 => types.Int16,
+            Code.Ldind_U2 => types.UInt16,
+            Code.Ldind_I4 or Code.Stind_I4 => types.Int32,
+            Code.Ldind_U4 => types.UInt32,
+            Code.Ldind_I8 or Code.Stind_I8 => types.Int64,
+            Code.Ldind_I or Code.Stind_I => types.IntPtr,
+            Code.Ldind_R4 or Code.Stind_R4 => types.Single,
+            Code.Ldind_R8 or Code.Stind_R8 => types.Double,
+            Code.Ldind_Ref or Code.Stind_Ref => types.Object,
+            _ => null,
+        };
+    }
+
+    private static string BuildIndirectAccess(CppExpression address)
+    {
+        return address.Type is ByReferenceType ? address.Code : $"*({address.Code})";
     }
 
     private void EmitCall(MethodReference method, int indentLevel)
@@ -939,19 +1067,42 @@ internal sealed partial class IlMethodTranslator
         var operand = Pop();
         var targetType = opcode switch
         {
-            Code.Conv_I1 => "int8_t",
-            Code.Conv_I2 => "int16_t",
-            Code.Conv_I4 => "int32_t",
-            Code.Conv_I8 => "int64_t",
-            Code.Conv_U1 => "uint8_t",
-            Code.Conv_U2 => "uint16_t",
-            Code.Conv_U4 => "uint32_t",
-            Code.Conv_U8 => "uint64_t",
-            Code.Conv_R4 => "float",
+            Code.Conv_I or Code.Conv_Ovf_I or Code.Conv_Ovf_I_Un => "intptr_t",
+            Code.Conv_I1 or Code.Conv_Ovf_I1 or Code.Conv_Ovf_I1_Un => "int8_t",
+            Code.Conv_I2 or Code.Conv_Ovf_I2 or Code.Conv_Ovf_I2_Un => "int16_t",
+            Code.Conv_I4 or Code.Conv_Ovf_I4 or Code.Conv_Ovf_I4_Un => "int32_t",
+            Code.Conv_I8 or Code.Conv_Ovf_I8 or Code.Conv_Ovf_I8_Un => "int64_t",
+            Code.Conv_U or Code.Conv_Ovf_U or Code.Conv_Ovf_U_Un => "uintptr_t",
+            Code.Conv_U1 or Code.Conv_Ovf_U1 or Code.Conv_Ovf_U1_Un => "uint8_t",
+            Code.Conv_U2 or Code.Conv_Ovf_U2 or Code.Conv_Ovf_U2_Un => "uint16_t",
+            Code.Conv_U4 or Code.Conv_Ovf_U4 or Code.Conv_Ovf_U4_Un => "uint32_t",
+            Code.Conv_U8 or Code.Conv_Ovf_U8 or Code.Conv_Ovf_U8_Un => "uint64_t",
+            Code.Conv_R4 or Code.Conv_R_Un => "float",
             Code.Conv_R8 => "double",
             _ => throw new NotSupportedException($"Unsupported conversion opcode {opcode}"),
         };
-        _stack.Push(new CppExpression { Code = $"static_cast<{targetType}>({operand.Code})", Type = operand.Type });
+        _stack.Push(new CppExpression { Code = $"static_cast<{targetType}>({operand.Code})", Type = ResolveConversionTypeReference(opcode) ?? operand.Type });
+    }
+
+    private TypeReference? ResolveConversionTypeReference(Code opcode)
+    {
+        var types = _method.Module.TypeSystem;
+        return opcode switch
+        {
+            Code.Conv_I or Code.Conv_Ovf_I or Code.Conv_Ovf_I_Un => types.IntPtr,
+            Code.Conv_I1 or Code.Conv_Ovf_I1 or Code.Conv_Ovf_I1_Un => types.SByte,
+            Code.Conv_I2 or Code.Conv_Ovf_I2 or Code.Conv_Ovf_I2_Un => types.Int16,
+            Code.Conv_I4 or Code.Conv_Ovf_I4 or Code.Conv_Ovf_I4_Un => types.Int32,
+            Code.Conv_I8 or Code.Conv_Ovf_I8 or Code.Conv_Ovf_I8_Un => types.Int64,
+            Code.Conv_U or Code.Conv_Ovf_U or Code.Conv_Ovf_U_Un => types.UIntPtr,
+            Code.Conv_U1 or Code.Conv_Ovf_U1 or Code.Conv_Ovf_U1_Un => types.Byte,
+            Code.Conv_U2 or Code.Conv_Ovf_U2 or Code.Conv_Ovf_U2_Un => types.UInt16,
+            Code.Conv_U4 or Code.Conv_Ovf_U4 or Code.Conv_Ovf_U4_Un => types.UInt32,
+            Code.Conv_U8 or Code.Conv_Ovf_U8 or Code.Conv_Ovf_U8_Un => types.UInt64,
+            Code.Conv_R4 or Code.Conv_R_Un => types.Single,
+            Code.Conv_R8 => types.Double,
+            _ => null,
+        };
     }
 
     private void EmitNewObject(MethodReference constructor)
@@ -1083,6 +1234,26 @@ internal sealed partial class IlMethodTranslator
         }
 
         throw new NotSupportedException($"Unsupported goto branch target in {_method.FullName}");
+    }
+
+    private void AppendSwitchGoto(Instruction[] targets, int indentLevel)
+    {
+        var switchValue = Pop();
+        AppendLine(indentLevel, $"switch ({switchValue.Code}) {{");
+
+        if (_gotoLabels == null)
+            throw new NotSupportedException($"Unsupported switch branch target in {_method.FullName}");
+
+        for (var i = 0; i < targets.Length; i++)
+        {
+            if (!_instructionIndices.TryGetValue(targets[i], out var targetIndex) || !_gotoLabels.TryGetValue(targetIndex, out var label))
+                throw new NotSupportedException($"Unsupported switch branch target in {_method.FullName}");
+
+            AppendLine(indentLevel + 1, $"case {i}: goto {label};");
+        }
+
+        AppendLine(indentLevel + 1, "default: break;");
+        AppendLine(indentLevel, "}");
     }
 
     private void AppendCompareGoto(Code opcode, Instruction targetInstruction, int indentLevel)
