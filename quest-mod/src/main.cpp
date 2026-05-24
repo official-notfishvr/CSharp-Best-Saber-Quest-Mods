@@ -340,7 +340,6 @@ static void CustomFloorPlugin_QuestCustomFloorMod_ApplyMenuVisibility_GlobalName
             }
         }
         i = (i + 1);
-        loop_continue_0:;
     }
 }
 
@@ -402,7 +401,6 @@ static void CustomFloorPlugin_QuestCustomFloorMod_SetNamedObjectsActive_UnityEng
             child->get_gameObject()->SetActive(active);
         }
         i = (i + 1);
-        loop_continue_0:;
     }
 }
 

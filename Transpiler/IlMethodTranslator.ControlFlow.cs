@@ -80,7 +80,6 @@ internal sealed partial class IlMethodTranslator
         try
         {
             TranslateRange(bodyStartIndex, incrementStartIndex, indentLevel + 1);
-            AppendLine(indentLevel + 1, $"{continueLabel}:;");
             TranslateRange(incrementStartIndex, conditionStartIndex, indentLevel + 1);
         }
         finally

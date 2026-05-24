@@ -970,8 +970,8 @@ internal sealed partial class IlMethodTranslator
 
     private TypeReference ResolveEffectiveReturnType(MethodReference method, CppExpression? instance)
     {
-        if (method.Name == "FindObjectsOfTypeAll" && method is GenericInstanceMethod findObjectsGeneric && findObjectsGeneric.GenericArguments.Count == 1)
-            return new ArrayType(findObjectsGeneric.GenericArguments[0]);
+        if (method is GenericInstanceMethod genericMethod)
+            return ResolveGenericReturnType(genericMethod);
 
         if (method.Name == "get_Item")
         {
@@ -988,6 +988,28 @@ internal sealed partial class IlMethodTranslator
             return genericInstance.GenericArguments[genericParameter.Position];
 
         return method.ReturnType;
+    }
+
+    private static TypeReference ResolveGenericReturnType(GenericInstanceMethod method)
+    {
+        return SubstituteGenericReturnType(method.ReturnType, method);
+    }
+
+    private static TypeReference SubstituteGenericReturnType(TypeReference type, GenericInstanceMethod method)
+    {
+        if (type is GenericParameter genericParameter && genericParameter.Type == GenericParameterType.Method && genericParameter.Position >= 0 && genericParameter.Position < method.GenericArguments.Count)
+            return method.GenericArguments[genericParameter.Position];
+
+        if (type is ArrayType arrayType)
+            return new ArrayType(SubstituteGenericReturnType(arrayType.ElementType, method), arrayType.Rank);
+
+        if (type is ByReferenceType byReferenceType)
+            return new ByReferenceType(SubstituteGenericReturnType(byReferenceType.ElementType, method));
+
+        if (type is PointerType pointerType)
+            return new PointerType(SubstituteGenericReturnType(pointerType.ElementType, method));
+
+        return type;
     }
 
     private void EmitReturn(int indentLevel)
