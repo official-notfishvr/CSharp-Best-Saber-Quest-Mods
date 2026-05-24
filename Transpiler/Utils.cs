@@ -34,6 +34,7 @@ internal sealed class LocalStaticFieldEntry
     public required string DeclaringTypeFullName { get; init; }
     public required TypeReference Type { get; init; }
     public string? DefaultValueCpp { get; init; }
+    public IReadOnlyList<string>? StringArrayElements { get; init; }
 }
 
 internal sealed class CustomTypeEntry
@@ -50,6 +51,7 @@ internal sealed class CustomTypeFieldEntry
 {
     public required string Name { get; init; }
     public required string CppType { get; init; }
+    public string? DefaultValueCpp { get; init; }
 }
 
 internal enum HookPhase
@@ -73,8 +75,16 @@ internal sealed class CppExpression
 {
     public required string Code { get; init; }
     public TypeReference? Type { get; init; }
+    public TypeReference? TypeToken { get; init; }
+    public List<string?>? StringArrayElements { get; init; }
     public bool HasSideEffects { get; init; }
     public bool PreferAutoDeclaration { get; init; }
+}
+
+internal sealed class StaticDefaultValue
+{
+    public string? Code { get; init; }
+    public IReadOnlyList<string>? StringArrayElements { get; init; }
 }
 
 internal sealed class CppCodeWriter

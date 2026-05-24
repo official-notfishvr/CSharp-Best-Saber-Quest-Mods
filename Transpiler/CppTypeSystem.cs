@@ -79,7 +79,7 @@ internal sealed class CppTypeSystem
             current = current.DeclaringType;
         }
 
-        return string.Join("::", names);
+        return string.Join("_", names);
     }
 
     public string? GetIncludePath(TypeReference? type)
@@ -139,8 +139,8 @@ internal sealed class CppTypeSystem
 
     public string MapArrayElementTypeName(TypeReference elementType)
     {
-        var elementFullName = Normalize(elementType).FullName;
-        return PrimitiveTypes.TryGetValue(elementFullName, out var mapped) ? mapped : "Il2CppObject*";
+        var normalized = Normalize(elementType);
+        return PrimitiveTypes.TryGetValue(normalized.FullName, out var mapped) ? mapped : MapType(normalized);
     }
 
     private static TypeReference Normalize(TypeReference type)
@@ -160,15 +160,11 @@ internal sealed class CppTypeSystem
 
     private static string BuildIncludeName(TypeReference type)
     {
-        var names = new Stack<string>();
-        TypeReference? current = type;
-        while (current != null)
-        {
-            names.Push(FormatTypeName(current.Name));
+        var current = type;
+        while (current.DeclaringType != null)
             current = current.DeclaringType;
-        }
 
-        return string.Join("/", names);
+        return FormatTypeName(current.Name);
     }
 
     private static string FormatTypeName(string name)

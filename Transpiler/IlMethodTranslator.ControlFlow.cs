@@ -14,6 +14,9 @@ internal sealed partial class IlMethodTranslator
             var instruction = _instructions[index];
             var consumedUntil = index;
 
+            if (TryTranslateCompoundBoolean(ref index, indentLevel))
+                continue;
+
             if (TryEmitStructuredLoop(instruction, index, endIndex, indentLevel, out consumedUntil))
             {
                 index = consumedUntil - 1;
@@ -28,8 +31,21 @@ internal sealed partial class IlMethodTranslator
 
             EmitInstruction(instruction, indentLevel);
 
-            if (instruction.OpCode.Code is Code.Br or Code.Br_S or Code.Leave or Code.Leave_S && TryBuildReturnFromBranchTarget((Instruction)instruction.Operand, out _))
+            if (instruction.OpCode.Code is Code.Br or Code.Br_S or Code.Leave or Code.Leave_S && TryBuildReturnFromBranchTarget((Instruction)instruction.Operand, out var returnExpression))
+            {
+                if (_method.ReturnType.FullName == "System.Void")
+                {
+                    AppendLine(indentLevel, "return;");
+                }
+                else
+                {
+                    if (TryResolveRecentReturnValue((Instruction)instruction.Operand, out var recentReturnExpression))
+                        returnExpression = recentReturnExpression;
+
+                    AppendLine(indentLevel, $"return {returnExpression};");
+                }
                 break;
+            }
         }
     }
 
@@ -42,7 +58,8 @@ internal sealed partial class IlMethodTranslator
         if (!TryGetBranchTargetIndex(instruction, index, endIndex, out var conditionStartIndex))
             return false;
 
-        var bodyStartIndex = index + 1;
+        conditionStartIndex = GetFirstMeaningfulInstructionIndex(conditionStartIndex, endIndex);
+        var bodyStartIndex = GetFirstMeaningfulInstructionIndex(index + 1, conditionStartIndex);
         if (bodyStartIndex >= conditionStartIndex)
             return false;
 
@@ -90,16 +107,19 @@ internal sealed partial class IlMethodTranslator
                 if (!TryGetBranchTargetIndex(instruction, index, endIndex, out var targetIndex))
                     return false;
 
+                if (IsBooleanMaterializationTarget(targetIndex))
+                    return false;
+
                 var bodyStartIndex = index + 1;
-                string conditionValue;
+                CppExpression conditionValue;
                 if (TryGetImmediateStoredLocalValue(index, out var storedExpression))
                 {
                     Pop();
-                    conditionValue = storedExpression.Code;
+                    conditionValue = storedExpression;
                 }
                 else
                 {
-                    conditionValue = Pop().Code;
+                    conditionValue = Pop();
                 }
                 var positiveCondition = instruction.OpCode.Code is Code.Brfalse or Code.Brfalse_S ? MakeExplicitBooleanCheck(conditionValue, invert: false) : MakeExplicitBooleanCheck(conditionValue, invert: true);
                 positiveCondition = ExtendConditionChain(positiveCondition, ref bodyStartIndex, targetIndex, endIndex);
@@ -277,15 +297,15 @@ internal sealed partial class IlMethodTranslator
                 if (!TryGetBranchTargetIndex(instruction, sourceIndex, endIndex, out var targetIndex) || targetIndex != expectedTargetIndex)
                     return false;
 
-                string conditionValue;
+                CppExpression conditionValue;
                 if (TryGetImmediateStoredLocalValue(sourceIndex, out var storedExpression))
                 {
                     Pop();
-                    conditionValue = storedExpression.Code;
+                    conditionValue = storedExpression;
                 }
                 else
                 {
-                    conditionValue = Pop().Code;
+                    conditionValue = Pop();
                 }
                 positiveCondition = instruction.OpCode.Code is Code.Brfalse or Code.Brfalse_S ? MakeExplicitBooleanCheck(conditionValue, invert: false) : MakeExplicitBooleanCheck(conditionValue, invert: true);
                 return true;
@@ -347,7 +367,16 @@ internal sealed partial class IlMethodTranslator
 
                 EmitInstruction(instruction, 0);
                 if (Statements.Count != initialLineCount)
+                {
+                    if (IsLocalStoreOpcode(instruction.OpCode.Code))
+                    {
+                        while (Statements.Count > initialLineCount)
+                            Statements.RemoveAt(Statements.Count - 1);
+                        continue;
+                    }
+
                     return false;
+                }
             }
 
             return false;
@@ -364,36 +393,40 @@ internal sealed partial class IlMethodTranslator
         if (instruction.Operand is not Instruction targetInstruction)
             return false;
 
-        if (!_instructionIndices.TryGetValue(targetInstruction, out var targetIndex) || targetIndex != bodyStartIndex)
+        if (!_instructionIndices.TryGetValue(targetInstruction, out var targetIndex))
+            return false;
+
+        var normalizedTargetIndex = GetFirstMeaningfulInstructionIndex(targetIndex, endIndex);
+        if (normalizedTargetIndex != bodyStartIndex)
             return false;
 
         switch (instruction.OpCode.Code)
         {
             case Code.Brtrue:
             case Code.Brtrue_S:
-                string trueConditionValue;
+                CppExpression trueConditionValue;
                 if (TryGetImmediateStoredLocalValue(_instructionIndices[instruction], out var storedTrueExpression))
                 {
                     Pop();
-                    trueConditionValue = storedTrueExpression.Code;
+                    trueConditionValue = storedTrueExpression;
                 }
                 else
                 {
-                    trueConditionValue = Pop().Code;
+                    trueConditionValue = Pop();
                 }
                 conditionExpression = MakeExplicitBooleanCheck(trueConditionValue, invert: false);
                 return true;
             case Code.Brfalse:
             case Code.Brfalse_S:
-                string falseConditionValue;
+                CppExpression falseConditionValue;
                 if (TryGetImmediateStoredLocalValue(_instructionIndices[instruction], out var storedFalseExpression))
                 {
                     Pop();
-                    falseConditionValue = storedFalseExpression.Code;
+                    falseConditionValue = storedFalseExpression;
                 }
                 else
                 {
-                    falseConditionValue = Pop().Code;
+                    falseConditionValue = Pop();
                 }
                 conditionExpression = MakeExplicitBooleanCheck(falseConditionValue, invert: true);
                 return true;
@@ -443,6 +476,10 @@ internal sealed partial class IlMethodTranslator
             if (!_instructionIndices.TryGetValue(targetInstruction, out var targetIndex))
                 continue;
 
+            targetIndex = GetFirstMeaningfulInstructionIndex(targetIndex, conditionStartIndex);
+            if (IsBooleanMaterializationStoreTarget(targetIndex))
+                continue;
+
             if (targetIndex <= bodyStartIndex || targetIndex >= conditionStartIndex)
                 continue;
 
@@ -473,7 +510,10 @@ internal sealed partial class IlMethodTranslator
         if (!_instructionIndices.TryGetValue(targetInstruction, out var targetIndex) || targetIndex <= bodyEndIndex || targetIndex > endIndex)
             return false;
 
-        thenEndIndex = finalInstructionIndex;
+        if (TryBuildReturnFromBranchTarget(targetInstruction, out _))
+            return false;
+
+        thenEndIndex = bodyEndIndex;
         elseEndIndex = targetIndex;
         return true;
     }
@@ -489,6 +529,17 @@ internal sealed partial class IlMethodTranslator
         return startIndex - 1;
     }
 
+    private int GetFirstMeaningfulInstructionIndex(int startIndex, int endIndex)
+    {
+        for (var index = startIndex; index < endIndex; index++)
+        {
+            if (_instructions[index].OpCode.Code != Code.Nop)
+                return index;
+        }
+
+        return endIndex;
+    }
+
     private bool IsEffectivelyEmptyRange(int startIndex, int endIndex)
     {
         return FindLastMeaningfulInstructionIndex(startIndex, endIndex) < startIndex;
@@ -501,6 +552,18 @@ internal sealed partial class IlMethodTranslator
         targetIndex = -1;
         var targetInstruction = (Instruction)branchInstruction.Operand;
         return _instructionIndices.TryGetValue(targetInstruction, out targetIndex) && targetIndex > sourceIndex && targetIndex <= endIndex;
+    }
+
+    private bool IsBooleanMaterializationStoreTarget(int targetIndex)
+    {
+        if (targetIndex <= 0 || targetIndex >= _instructions.Count)
+            return false;
+
+        var literalInstruction = _instructions[targetIndex - 1];
+        if (literalInstruction.OpCode.Code is not (Code.Ldc_I4_0 or Code.Ldc_I4_1))
+            return false;
+
+        return TryGetLocalIndex(_instructions[targetIndex], out _);
     }
 
     private bool TryBuildReturnFromBranchTarget(Instruction targetInstruction, out string returnExpression)
@@ -529,6 +592,22 @@ internal sealed partial class IlMethodTranslator
         return false;
     }
 
+    private bool TryResolveRecentReturnValue(Instruction targetInstruction, out string returnExpression)
+    {
+        returnExpression = "";
+        if (!_instructionIndices.TryGetValue(targetInstruction, out var targetIndex) || targetIndex >= _instructions.Count)
+            return false;
+
+        if (!TryGetLoadedLocalIndex(_instructions[targetIndex], out var localIndex))
+            return false;
+
+        if (!_recentLocalValues.TryGetValue(localIndex, out var value) || value.HasSideEffects)
+            return false;
+
+        returnExpression = value.Code;
+        return true;
+    }
+
     private bool TryBuildEarlyExit(int startIndex, int endIndex, out string exitStatement)
     {
         exitStatement = "";
@@ -536,13 +615,13 @@ internal sealed partial class IlMethodTranslator
         if (finalInstructionIndex < startIndex)
             return false;
 
-        if (!AreAllMeaningfulInstructionsWithinRange(startIndex, endIndex, finalInstructionIndex))
-            return false;
-
         var instruction = _instructions[finalInstructionIndex];
         if (instruction.OpCode.Code == Code.Ret)
         {
             if (_method.ReturnType.FullName != "System.Void")
+                return false;
+
+            if (!AreAllMeaningfulInstructionsWithinRange(startIndex, endIndex, finalInstructionIndex))
                 return false;
 
             exitStatement = "return;";
@@ -555,17 +634,68 @@ internal sealed partial class IlMethodTranslator
         var targetInstruction = (Instruction)instruction.Operand;
         if (TryBuildReturnFromBranchTarget(targetInstruction, out var returnExpression))
         {
+            if (TryBuildStoredReturnValue(startIndex, finalInstructionIndex, targetInstruction, out var storedReturnExpression))
+                returnExpression = storedReturnExpression;
+            else if (!AreAllMeaningfulInstructionsWithinRange(startIndex, endIndex, finalInstructionIndex))
+                return false;
+
             exitStatement = $"return {returnExpression};";
             return true;
         }
 
         if (_instructionIndices.TryGetValue(targetInstruction, out var targetIndex) && targetIndex < _instructions.Count && _instructions[targetIndex].OpCode.Code == Code.Ret)
         {
+            if (!AreAllMeaningfulInstructionsWithinRange(startIndex, endIndex, finalInstructionIndex))
+                return false;
+
             exitStatement = "return;";
             return _method.ReturnType.FullName == "System.Void";
         }
 
         return false;
+    }
+
+    private bool TryBuildStoredReturnValue(int startIndex, int branchIndex, Instruction targetInstruction, out string returnExpression)
+    {
+        returnExpression = "";
+        if (!_instructionIndices.TryGetValue(targetInstruction, out var targetIndex) || targetIndex + 1 >= _instructions.Count)
+            return false;
+
+        if (!TryGetLoadedLocalIndex(_instructions[targetIndex], out var returnLocalIndex) || _instructions[targetIndex + 1].OpCode.Code != Code.Ret)
+            return false;
+
+        if (branchIndex <= startIndex || !TryGetLocalIndex(_instructions[branchIndex - 1], out var storedLocalIndex) || storedLocalIndex != returnLocalIndex)
+            return false;
+
+        for (var index = startIndex; index < branchIndex - 1; index++)
+        {
+            if (_instructions[index].Operand is Instruction or Instruction[])
+                return false;
+        }
+
+        var snapshot = CaptureSnapshot();
+        var initialLineCount = Statements.Count;
+        try
+        {
+            for (var index = startIndex; index < branchIndex; index++)
+                EmitInstruction(_instructions[index], 0);
+
+            if (!_recentLocalValues.TryGetValue(returnLocalIndex, out var value) || value.HasSideEffects)
+                return false;
+
+            returnExpression = value.Code;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            RestoreSnapshot(snapshot);
+            while (Statements.Count > initialLineCount)
+                Statements.RemoveAt(Statements.Count - 1);
+        }
     }
 
     private bool AreAllMeaningfulInstructionsWithinRange(int startIndex, int endIndex, params int[] allowedIndices)
@@ -580,6 +710,122 @@ internal sealed partial class IlMethodTranslator
                 return false;
         }
 
+        return true;
+    }
+
+    private static bool IsLocalStoreOpcode(Code code)
+    {
+        return code is Code.Stloc or Code.Stloc_S or Code.Stloc_0 or Code.Stloc_1 or Code.Stloc_2 or Code.Stloc_3;
+    }
+
+    private bool IsBooleanMaterializationTarget(int targetIndex)
+    {
+        if (targetIndex < 0 || targetIndex + 1 >= _instructions.Count)
+            return false;
+
+        var loadInstruction = _instructions[targetIndex];
+        if (loadInstruction.OpCode.Code is not (Code.Ldc_I4_0 or Code.Ldc_I4_1))
+            return false;
+
+        return TryGetLocalIndex(_instructions[targetIndex + 1], out _);
+    }
+
+    private bool TryTranslateCompoundBoolean(ref int index, int indentLevel)
+    {
+        if (index + 2 >= _instructions.Count)
+            return false;
+
+        var branch1 = _instructions[index];
+        if (branch1.OpCode.Code is not (Code.Brfalse or Code.Brfalse_S or Code.Brtrue or Code.Brtrue_S))
+            return false;
+
+        if (branch1.Operand is not Instruction targetInst1 || !_instructionIndices.TryGetValue(targetInst1, out var target1))
+            return false;
+
+        if (target1 <= index + 1 || target1 + 1 >= _instructions.Count)
+            return false;
+
+        var loadLit = _instructions[target1];
+        if (loadLit.OpCode.Code is not (Code.Ldc_I4_0 or Code.Ldc_I4_1))
+            return false;
+
+        var storeInst = _instructions[target1 + 1];
+        if (!TryGetLocalIndex(storeInst, out _))
+            return false;
+
+        var branchIndices = new List<int> { index };
+        for (var idx = index + 1; idx < target1; idx++)
+        {
+            var ins = _instructions[idx];
+            if (ins.OpCode.Code is Code.Brfalse or Code.Brfalse_S or Code.Brtrue or Code.Brtrue_S)
+            {
+                if (ins.Operand is Instruction t && _instructionIndices.TryGetValue(t, out var tIdx) && tIdx == target1)
+                {
+                    branchIndices.Add(idx);
+                }
+            }
+        }
+
+        var cond2EndIndex = target1;
+        if (_instructions[target1 - 1].OpCode.Code is Code.Br or Code.Br_S)
+            cond2EndIndex = target1 - 1;
+
+        if (branchIndices[^1] + 1 >= cond2EndIndex)
+            return false;
+
+        var conditions = new List<string>();
+        for (var k = 0; k < branchIndices.Count; k++)
+        {
+            var brIdx = branchIndices[k];
+            var ins = _instructions[brIdx];
+            CppExpression expr;
+            if (k == 0)
+            {
+                expr = Pop();
+            }
+            else
+            {
+                for (var evalIdx = branchIndices[k - 1] + 1; evalIdx < brIdx; evalIdx++)
+                {
+                    EmitInstruction(_instructions[evalIdx], 0);
+                }
+                expr = Pop();
+            }
+
+            bool invert;
+            if (loadLit.OpCode.Code == Code.Ldc_I4_0)
+            {
+                invert = ins.OpCode.Code is not (Code.Brfalse or Code.Brfalse_S);
+            }
+            else
+            {
+                invert = ins.OpCode.Code is (Code.Brfalse or Code.Brfalse_S);
+            }
+            var condStr = MakeExplicitBooleanCheck(expr, invert);
+            conditions.Add(condStr);
+        }
+
+        for (var evalIdx = branchIndices[^1] + 1; evalIdx < cond2EndIndex; evalIdx++)
+        {
+            EmitInstruction(_instructions[evalIdx], 0);
+        }
+        var lastExpr = Pop();
+        var lastCondStr = MakeExplicitBooleanCheck(lastExpr, invert: false);
+        conditions.Add(lastCondStr);
+
+        string op = loadLit.OpCode.Code == Code.Ldc_I4_0 ? "&&" : "||";
+        string compoundCode = string.Join($" {op} ", conditions.Select(c => $"({c})"));
+
+        var compoundExpression = new CppExpression
+        {
+            Code = compoundCode,
+            Type = _method.Module.TypeSystem.Boolean,
+            PreferAutoDeclaration = true,
+        };
+
+        _stack.Push(compoundExpression);
+        EmitInstruction(storeInst, indentLevel);
+        index = target1 + 1;
         return true;
     }
 }

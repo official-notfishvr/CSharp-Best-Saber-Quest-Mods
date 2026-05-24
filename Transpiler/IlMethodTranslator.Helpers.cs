@@ -230,7 +230,10 @@ internal sealed partial class IlMethodTranslator
         if (!TryGetLocalIndex(_instructions[branchInstructionIndex - 2], out var storedLocalIndex) || storedLocalIndex != loadedLocalIndex)
             return false;
 
-        return _recentLocalValues.TryGetValue(storedLocalIndex, out expression!);
+        if (!_recentLocalValues.TryGetValue(storedLocalIndex, out expression!))
+            return false;
+
+        return !expression.HasSideEffects;
     }
 
     private static Dictionary<int, string> BuildLocalNameMap(MethodDefinition method)

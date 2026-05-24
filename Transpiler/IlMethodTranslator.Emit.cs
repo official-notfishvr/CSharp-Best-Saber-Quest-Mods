@@ -96,6 +96,9 @@ internal sealed partial class IlMethodTranslator
             case Code.Ldnull:
                 _stack.Push(new CppExpression { Code = "nullptr", Type = _method.Module.TypeSystem.Object });
                 return;
+            case Code.Ldtoken:
+                EmitLoadToken(instruction.Operand);
+                return;
             case Code.Ldfld:
                 LoadField((FieldReference)instruction.Operand, isStatic: false, asAddress: false);
                 return;
@@ -189,27 +192,15 @@ internal sealed partial class IlMethodTranslator
                 EmitNewObject((MethodReference)instruction.Operand);
                 return;
             case Code.Switch:
-                if (_useGotoFlow)
-                {
-                    AppendSwitchGoto((Instruction[])instruction.Operand, indentLevel);
-                    return;
-                }
+
                 break;
             case Code.Brfalse:
             case Code.Brfalse_S:
-                if (_useGotoFlow)
-                {
-                    AppendConditionalGoto((Instruction)instruction.Operand, MakeExplicitBooleanCheck(Pop().Code, invert: true), indentLevel);
-                    return;
-                }
+
                 break;
             case Code.Brtrue:
             case Code.Brtrue_S:
-                if (_useGotoFlow)
-                {
-                    AppendConditionalGoto((Instruction)instruction.Operand, MakeExplicitBooleanCheck(Pop().Code, invert: false), indentLevel);
-                    return;
-                }
+
                 break;
             case Code.Beq:
             case Code.Beq_S:
@@ -231,54 +222,14 @@ internal sealed partial class IlMethodTranslator
             case Code.Blt_S:
             case Code.Blt_Un:
             case Code.Blt_Un_S:
-                if (_useGotoFlow)
-                {
-                    AppendCompareGoto(instruction.OpCode.Code, (Instruction)instruction.Operand, indentLevel);
-                    return;
-                }
+
                 break;
             case Code.Br:
             case Code.Br_S:
             case Code.Leave:
             case Code.Leave_S:
-            {
-                var target = (Instruction)instruction.Operand;
-                if (_useGotoFlow)
-                {
-                    if (_gotoLabels != null && _instructionIndices.TryGetValue(target, out var gotoTargetIndex) && _gotoLabels.TryGetValue(gotoTargetIndex, out var gotoLabel))
-                    {
-                        AppendLine(indentLevel, $"goto {gotoLabel};");
-                        return;
-                    }
-                }
 
-                if (_instructionIndices.TryGetValue(target, out var branchTargetIndex))
-                {
-                    if (TryGetContinueLabel(branchTargetIndex, out var continueLabel))
-                    {
-                        AppendLine(indentLevel, $"goto {continueLabel};");
-                        return;
-                    }
-
-                    if (IsLoopBreakTarget(branchTargetIndex))
-                    {
-                        AppendLine(indentLevel, "break;");
-                        return;
-                    }
-                }
-
-                if (TryBuildReturnFromBranchTarget(target, out var returnExpression))
-                {
-                    AppendLine(indentLevel, $"return {returnExpression};");
-                    return;
-                }
-
-                if (_instructionIndices.TryGetValue(target, out var targetIndex) && targetIndex == _instructions.Count - 1 && _instructions[targetIndex].OpCode.Code == Code.Ret)
-                    return;
-                throw new NotSupportedException(
-                    $"Unsupported non-structured branch in {_method.FullName} (gotoFlow={_useGotoFlow}, targetIndex={(_instructionIndices.TryGetValue(target, out var debugTargetIndex) ? debugTargetIndex : -1)}, hasLabel={(_gotoLabels != null && _instructionIndices.TryGetValue(target, out var labelTargetIndex) && _gotoLabels.ContainsKey(labelTargetIndex))})"
-                );
-            }
+                break;
             case Code.Ret:
                 EmitReturn(indentLevel);
                 return;
@@ -774,6 +725,20 @@ internal sealed partial class IlMethodTranslator
             return;
         }
 
+        if (method.DeclaringType.FullName == "System.Type" && method.Name == "GetTypeFromHandle" && args.Count == 1)
+        {
+            _stack.Push(
+                new CppExpression
+                {
+                    Code = args[0].Code,
+                    Type = method.ReturnType,
+                    TypeToken = args[0].TypeToken,
+                    PreferAutoDeclaration = true,
+                }
+            );
+            return;
+        }
+
         if (TryBuildSquaredMagnitudeIntrinsic(method, args, out var squaredMagnitudeExpression))
         {
             _stack.Push(
@@ -831,7 +796,20 @@ internal sealed partial class IlMethodTranslator
             return new CppExpression
             {
                 Code = $"{instance.Code}{GetMemberAccessOperator(instance.Type)}{method.Name}<{_typeSystem.MapType(typeArgument)}>({argumentList})",
-                Type = method.ReturnType,
+                Type = ResolveEffectiveReturnType(method, instance),
+                PreferAutoDeclaration = true,
+                HasSideEffects = true,
+            };
+        }
+
+        if (method.Name == "LoadAsset" && instance != null && args.Count == 2 && args[1].TypeToken != null)
+        {
+            var typeArgument = args[1].TypeToken!;
+            RequiredInclude(typeArgument);
+            return new CppExpression
+            {
+                Code = $"{instance.Code}{GetMemberAccessOperator(instance.Type)}LoadAsset<{_typeSystem.MapType(typeArgument)}>({args[0].Code})",
+                Type = typeArgument,
                 PreferAutoDeclaration = true,
                 HasSideEffects = true,
             };
@@ -860,7 +838,7 @@ internal sealed partial class IlMethodTranslator
             return new CppExpression
             {
                 Code = instance != null ? $"{instance.Code}{GetMemberAccessOperator(instance.Type)}{emittedMethodName}({argumentList})" : $"{declaringType}::{emittedMethodName}({argumentList})",
-                Type = method.ReturnType,
+                Type = ResolveEffectiveReturnType(method, instance),
                 PreferAutoDeclaration = method.Name.StartsWith("get_", StringComparison.Ordinal),
                 HasSideEffects = true,
             };
@@ -871,7 +849,7 @@ internal sealed partial class IlMethodTranslator
             return new CppExpression
             {
                 Code = $"{instance.Code}{GetMemberAccessOperator(instance.Type)}{emittedMethodName}({argumentList})",
-                Type = method.ReturnType,
+                Type = ResolveEffectiveReturnType(method, instance),
                 PreferAutoDeclaration = true,
                 HasSideEffects = true,
             };
@@ -880,7 +858,8 @@ internal sealed partial class IlMethodTranslator
         return new CppExpression
         {
             Code = $"{declaringType}::{emittedMethodName}({argumentList})",
-            Type = method.ReturnType,
+            Type = ResolveEffectiveReturnType(method, instance),
+            PreferAutoDeclaration = method is GenericInstanceMethod,
             HasSideEffects = true,
         };
     }
@@ -991,6 +970,9 @@ internal sealed partial class IlMethodTranslator
 
     private TypeReference ResolveEffectiveReturnType(MethodReference method, CppExpression? instance)
     {
+        if (method.Name == "FindObjectsOfTypeAll" && method is GenericInstanceMethod findObjectsGeneric && findObjectsGeneric.GenericArguments.Count == 1)
+            return new ArrayType(findObjectsGeneric.GenericArguments[0]);
+
         if (method.Name == "get_Item")
         {
             var listInstance = NormalizeTypeReference(instance?.Type) as GenericInstanceType;
@@ -1043,12 +1025,40 @@ internal sealed partial class IlMethodTranslator
         _stack.Push(new CppExpression { Code = comparisonCode, Type = _method.Module.TypeSystem.Boolean });
     }
 
+    private void EmitLoadToken(object? operand)
+    {
+        if (operand is TypeReference typeReference)
+        {
+            RequiredInclude(typeReference);
+            var runtimeNamespace = typeReference.Namespace ?? "";
+            var runtimeClassName = GetRuntimeClassName(typeReference);
+            _stack.Push(
+                new CppExpression
+                {
+                    Code = $"reinterpret_cast<::System::Type*>(::il2cpp_utils::GetSystemType(\"{runtimeNamespace}\", \"{runtimeClassName}\"))",
+                    Type = _method.Module.ImportReference(typeof(Type)),
+                    TypeToken = typeReference,
+                    PreferAutoDeclaration = true,
+                }
+            );
+            return;
+        }
+
+        throw new NotSupportedException($"Unsupported ldtoken operand {operand?.GetType().FullName ?? "<null>"} in {_method.FullName}");
+    }
+
     private void EmitUnsignedGreaterThan()
     {
         var right = Pop();
         var left = Pop();
-        var op = IsNullLiteral(left) || IsNullLiteral(right) ? "!=" : ">";
-        _stack.Push(new CppExpression { Code = $"({left.Code} {op} {right.Code})", Type = _method.Module.TypeSystem.Boolean });
+        if (IsNullLiteral(left) ^ IsNullLiteral(right))
+        {
+            var candidate = IsNullLiteral(left) ? right : left;
+            _stack.Push(new CppExpression { Code = MakeExplicitBooleanCheck(candidate, invert: false), Type = _method.Module.TypeSystem.Boolean });
+            return;
+        }
+
+        _stack.Push(new CppExpression { Code = $"({left.Code} > {right.Code})", Type = _method.Module.TypeSystem.Boolean });
     }
 
     private static bool IsNullLiteral(CppExpression value)
@@ -1225,57 +1235,6 @@ internal sealed partial class IlMethodTranslator
         return true;
     }
 
-    private void AppendConditionalGoto(Instruction targetInstruction, string condition, int indentLevel)
-    {
-        if (_gotoLabels != null && _instructionIndices.TryGetValue(targetInstruction, out var targetIndex) && _gotoLabels.TryGetValue(targetIndex, out var label))
-        {
-            AppendLine(indentLevel, $"if ({condition}) goto {label};");
-            return;
-        }
-
-        throw new NotSupportedException($"Unsupported goto branch target in {_method.FullName}");
-    }
-
-    private void AppendSwitchGoto(Instruction[] targets, int indentLevel)
-    {
-        var switchValue = Pop();
-        AppendLine(indentLevel, $"switch ({switchValue.Code}) {{");
-
-        if (_gotoLabels == null)
-            throw new NotSupportedException($"Unsupported switch branch target in {_method.FullName}");
-
-        for (var i = 0; i < targets.Length; i++)
-        {
-            if (!_instructionIndices.TryGetValue(targets[i], out var targetIndex) || !_gotoLabels.TryGetValue(targetIndex, out var label))
-                throw new NotSupportedException($"Unsupported switch branch target in {_method.FullName}");
-
-            AppendLine(indentLevel + 1, $"case {i}: goto {label};");
-        }
-
-        AppendLine(indentLevel + 1, "default: break;");
-        AppendLine(indentLevel, "}");
-    }
-
-    private void AppendCompareGoto(Code opcode, Instruction targetInstruction, int indentLevel)
-    {
-        var right = Pop();
-        var left = Pop();
-        var condition = TryBuildSimplifiedCompareCondition(opcode, left, right, branchWhenTrue: true, out var simplified)
-            ? simplified
-            : opcode switch
-            {
-                Code.Beq or Code.Beq_S => $"({left.Code} == {right.Code})",
-                Code.Bne_Un or Code.Bne_Un_S => $"({left.Code} != {right.Code})",
-                Code.Bge or Code.Bge_S or Code.Bge_Un or Code.Bge_Un_S => $"({left.Code} >= {right.Code})",
-                Code.Bgt or Code.Bgt_S or Code.Bgt_Un or Code.Bgt_Un_S => $"({left.Code} > {right.Code})",
-                Code.Ble or Code.Ble_S or Code.Ble_Un or Code.Ble_Un_S => $"({left.Code} <= {right.Code})",
-                Code.Blt or Code.Blt_S or Code.Blt_Un or Code.Blt_Un_S => $"({left.Code} < {right.Code})",
-                _ => throw new NotSupportedException($"Unsupported compare branch opcode {opcode}"),
-            };
-
-        AppendConditionalGoto(targetInstruction, condition, indentLevel);
-    }
-
     private bool TryGetContinueLabel(int targetIndex, out string label)
     {
         foreach (var scope in _continueLabelScopes)
@@ -1419,6 +1378,20 @@ internal sealed partial class IlMethodTranslator
         return value;
     }
 
+    private string MakeExplicitBooleanCheck(CppExpression value, bool invert)
+    {
+        if (IsBooleanType(value.Type))
+            return MakeExplicitBooleanCheck(value.Code, invert);
+
+        if (IsNullLiteral(value))
+            return invert ? "true" : "false";
+
+        if (SupportsDirectNullComparison(value.Type))
+            return invert ? $"({value.Code} == nullptr)" : $"({value.Code} != nullptr)";
+
+        return MakeExplicitBooleanCheck(value.Code, invert);
+    }
+
     private static string MakeExplicitBooleanCheck(string value, bool invert)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -1436,6 +1409,24 @@ internal sealed partial class IlMethodTranslator
         }
 
         return invert ? $"!({normalizedValue})" : $"({normalizedValue})";
+    }
+
+    private static bool SupportsDirectNullComparison(TypeReference? type)
+    {
+        type = NormalizeTypeReference(type);
+        if (type == null)
+            return false;
+
+        if (type is ArrayType)
+            return false;
+
+        if (type is PointerType or FunctionPointerType)
+            return true;
+
+        if (type.IsValueType || type.Resolve()?.IsValueType == true)
+            return false;
+
+        return true;
     }
 
     private bool TryBuildSimplifiedCompareCondition(Code opcode, CppExpression left, CppExpression right, bool branchWhenTrue, out string condition)
@@ -1464,10 +1455,24 @@ internal sealed partial class IlMethodTranslator
         if (!string.Equals(op, "==", StringComparison.Ordinal) && !string.Equals(op, "!=", StringComparison.Ordinal))
             return false;
 
+        if (TryBuildNullComparison(left, right, string.Equals(op, "==", StringComparison.Ordinal), out expression))
+            return true;
+
         if (TryBuildBooleanLiteralComparison(left, right, string.Equals(op, "==", StringComparison.Ordinal), out expression))
             return true;
 
         return TryBuildBooleanLiteralComparison(right, left, string.Equals(op, "==", StringComparison.Ordinal), out expression);
+    }
+
+    private bool TryBuildNullComparison(CppExpression left, CppExpression right, bool equalsComparison, out string expression)
+    {
+        expression = "";
+        if (IsNullLiteral(left) == IsNullLiteral(right))
+            return false;
+
+        var candidate = IsNullLiteral(left) ? right : left;
+        expression = MakeExplicitBooleanCheck(candidate, invert: equalsComparison);
+        return true;
     }
 
     private bool TryBuildBooleanLiteralComparison(CppExpression candidateBoolean, CppExpression candidateLiteral, bool equalsComparison, out string expression)

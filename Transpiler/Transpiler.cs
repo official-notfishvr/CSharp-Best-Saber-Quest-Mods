@@ -110,8 +110,8 @@ internal sealed class Transpiler
             if (configAttribute == null)
                 continue;
 
-            defaults.TryGetValue($"property:{property.Name}", out var defaultValueCpp);
-            defaultValueCpp ??= ReadNamedAttributeDefaultValue(configAttribute, property.PropertyType);
+            defaults.TryGetValue($"property:{property.Name}", out var defaultValue);
+            var defaultValueCpp = defaultValue?.Code ?? ReadNamedAttributeDefaultValue(configAttribute, property.PropertyType);
 
             _configValues.Add(
                 new ConfigEntry
@@ -132,8 +132,8 @@ internal sealed class Transpiler
             if (configAttribute == null)
                 continue;
 
-            defaults.TryGetValue($"field:{field.Name}", out var defaultValueCpp);
-            defaultValueCpp ??= ReadNamedAttributeDefaultValue(configAttribute, field.FieldType);
+            defaults.TryGetValue($"field:{field.Name}", out var defaultValue);
+            var defaultValueCpp = defaultValue?.Code ?? ReadNamedAttributeDefaultValue(configAttribute, field.FieldType);
 
             _configValues.Add(
                 new ConfigEntry
@@ -204,9 +204,9 @@ internal sealed class Transpiler
         return direct ?? fallbackType;
     }
 
-    private Dictionary<string, string> ReadStaticDefaults(TypeDefinition type)
+    private Dictionary<string, StaticDefaultValue> ReadStaticDefaults(TypeDefinition type)
     {
-        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        var result = new Dictionary<string, StaticDefaultValue>(StringComparer.Ordinal);
         var staticCtor = type.Methods.FirstOrDefault(method => method.IsConstructor && method.IsStatic && method.HasBody);
         if (staticCtor?.Body == null)
             return result;
@@ -237,15 +237,64 @@ internal sealed class Transpiler
                 case Code.Ldstr:
                     stack.Push(new CppExpression { Code = CppLiteral.String((string)instruction.Operand) });
                     break;
+                case Code.Dup:
+                    if (stack.Count > 0)
+                        stack.Push(stack.Peek());
+                    break;
+                case Code.Newarr:
+                {
+                    var elementType = (TypeReference)instruction.Operand;
+                    if (stack.Count == 0 || elementType.FullName != "System.String")
+                    {
+                        stack.Clear();
+                        break;
+                    }
+
+                    var lengthExpression = stack.Pop().Code;
+                    if (!int.TryParse(lengthExpression, NumberStyles.Integer, CultureInfo.InvariantCulture, out var length) || length < 0)
+                    {
+                        stack.Clear();
+                        break;
+                    }
+
+                    stack.Push(new CppExpression
+                    {
+                        Code = "",
+                        StringArrayElements = Enumerable.Repeat<string?>(null, length).ToList(),
+                    });
+                    break;
+                }
+                case Code.Stelem_Ref:
+                {
+                    if (stack.Count < 3)
+                    {
+                        stack.Clear();
+                        break;
+                    }
+
+                    var value = stack.Pop();
+                    var index = stack.Pop();
+                    var array = stack.Pop();
+                    if (array.StringArrayElements == null || !int.TryParse(index.Code, NumberStyles.Integer, CultureInfo.InvariantCulture, out var elementIndex) || elementIndex < 0 || elementIndex >= array.StringArrayElements.Count)
+                    {
+                        stack.Clear();
+                        break;
+                    }
+
+                    array.StringArrayElements[elementIndex] = value.Code;
+                    break;
+                }
                 case Code.Stsfld:
                 {
                     if (stack.Count == 0)
                         break;
 
-                    var value = stack.Pop().Code;
+                    var value = stack.Pop();
                     var field = (FieldReference)instruction.Operand;
                     var propertyName = TryGetAutoPropertyName(field.Name);
-                    result[propertyName != null ? $"property:{propertyName}" : $"field:{field.Name}"] = NormalizeDefaultValue(field.FieldType, value);
+                    result[propertyName != null ? $"property:{propertyName}" : $"field:{field.Name}"] = value.StringArrayElements != null
+                        ? new StaticDefaultValue { StringArrayElements = value.StringArrayElements.Select(item => item ?? CppLiteral.String("")).ToArray() }
+                        : new StaticDefaultValue { Code = NormalizeDefaultValue(field.FieldType, value.Code) };
                     break;
                 }
                 case Code.Ret:
@@ -401,6 +450,8 @@ internal sealed class Transpiler
         writer.WriteLine("}");
         writer.WriteLine();
 
+        WriteLocalStaticInitializers(writer);
+
         foreach (var helperMethod in helperMethodEmissions)
             WriteHelperPrototype(writer, helperMethod);
 
@@ -423,6 +474,8 @@ internal sealed class Transpiler
 
         writer.WriteLine("MOD_EXTERN_FUNC void late_load() noexcept {");
         writer.WriteLine("    il2cpp_functions::Init();");
+        if (_localStaticFields.Any(field => field.StringArrayElements != null))
+            writer.WriteLine("    InitializeLocalStaticFields();");
         if (_customTypes.Count > 0)
             writer.WriteLine("    custom_types::Register::AutoRegister();");
 
@@ -452,15 +505,48 @@ internal sealed class Transpiler
         WriteOutputFile(outputDirectory, Path.Combine("src", "main.cpp"), NormalizeGeneratedSource(writer.ToString()));
     }
 
+    private void WriteLocalStaticInitializers(CppCodeWriter writer)
+    {
+        var arrayFields = _localStaticFields.Where(field => field.StringArrayElements != null).ToList();
+        if (arrayFields.Count == 0)
+            return;
+
+        writer.WriteLine("static void InitializeLocalStaticFields() {");
+        foreach (var field in arrayFields)
+        {
+            var elements = field.StringArrayElements!;
+            writer.WriteLine($"    {field.CppIdentifier} = ArrayW<::StringW>({elements.Count});");
+            for (var i = 0; i < elements.Count; i++)
+                writer.WriteLine($"    {field.CppIdentifier}[{i}] = {elements[i]};");
+        }
+        writer.WriteLine("}");
+        writer.WriteLine();
+    }
+
     private void WriteCustomTypes(CppCodeWriter writer)
     {
         foreach (var customType in _customTypes)
         {
+            var fieldDefaults = customType.Fields.Where(field => field.DefaultValueCpp != null).ToList();
             writer.WriteLine($"DECLARE_CLASS_CODEGEN_DLL({customType.CppNamespace}, {customType.CppName}, {customType.BaseCppType}, \"{customType.DllName}\") {{");
-            writer.WriteLine("    DECLARE_DEFAULT_CTOR();");
+            writer.WriteLine(fieldDefaults.Count == 0 ? "    DECLARE_DEFAULT_CTOR();" : "    DECLARE_CTOR(__ctor);");
             foreach (var field in customType.Fields)
                 writer.WriteLine($"    DECLARE_INSTANCE_FIELD({field.CppType}, {field.Name});");
             writer.WriteLine("};");
+            writer.WriteLine();
+            writer.WriteLine($"DEFINE_TYPE({customType.CppNamespace}, {customType.CppName});");
+            writer.WriteLine();
+
+            if (fieldDefaults.Count == 0)
+                continue;
+
+            var qualifiedType = $"{customType.CppNamespace}::{customType.CppName}";
+            writer.WriteLine($"void {qualifiedType}::__ctor() {{");
+            writer.WriteLine("    INVOKE_CTOR();");
+            writer.WriteLine($"    INVOKE_BASE_CTOR({qualifiedType}::___TypeRegistration::get()->baseType());");
+            foreach (var field in fieldDefaults)
+                writer.WriteLine($"    {field.Name} = {field.DefaultValueCpp};");
+            writer.WriteLine("}");
             writer.WriteLine();
         }
     }
@@ -481,14 +567,17 @@ internal sealed class Transpiler
 
     private void WriteHook(CppCodeWriter writer, HookDefinition hook, IlMethodTranslator bodyGenerator)
     {
+        var runtimeTargetType = ResolveRuntimeHookTargetType(hook);
         var returnType = _typeSystem.MapType(hook.Method.ReturnType);
-        var parameters = hook.Method.Parameters.Select(parameter => $"{_typeSystem.MapType(parameter.ParameterType)} {CppIdentifier.Sanitize(parameter.Name)}").ToList();
+        var parameters = BuildHookRuntimeParameters(hook, runtimeTargetType);
 
         writer.WriteLine("MAKE_HOOK_MATCH(");
         writer.WriteLine($"    {hook.HookName},");
-        writer.WriteLine($"    &{_typeSystem.MapNamespace(hook.TargetType.Namespace)}::{_typeSystem.ComposeTypeName(hook.TargetType)}::{MapTargetMethodName(hook)},");
+        writer.WriteLine($"    &{_typeSystem.MapNamespace(runtimeTargetType.Namespace)}::{_typeSystem.ComposeTypeName(runtimeTargetType)}::{MapTargetMethodName(hook)},");
         writer.WriteLine($"    {returnType},");
         writer.WriteLine($"    {string.Join(", ", parameters)}) {{");
+
+        WriteHookParameterCasts(writer, hook, runtimeTargetType);
 
         foreach (var line in bodyGenerator.Statements)
             writer.WriteLine($"    {line}");
@@ -502,9 +591,11 @@ internal sealed class Transpiler
         if (prefixHook == null && postfixHook == null)
             throw new InvalidOperationException($"Hook {hook.HookName} must have a prefix or postfix method.");
 
+        var runtimeTargetType = ResolveRuntimeHookTargetType(hook);
         var returnType = _typeSystem.MapType(hook.Method.ReturnType);
-        var parameters = hook.Method.Parameters.Select(parameter => $"{_typeSystem.MapType(parameter.ParameterType)} {CppIdentifier.Sanitize(parameter.Name)}").ToList();
+        var parameters = BuildHookRuntimeParameters(hook, runtimeTargetType);
         var argumentList = string.Join(", ", hook.Method.Parameters.Select(parameter => CppIdentifier.Sanitize(parameter.Name)));
+        var runtimeArgumentList = BuildHookRuntimeArgumentList(hook, runtimeTargetType);
 
         if (prefixHook != null && prefixBody != null)
             WriteHelperFunction(writer, prefixHook, prefixBody);
@@ -514,23 +605,25 @@ internal sealed class Transpiler
 
         writer.WriteLine("MAKE_HOOK_MATCH(");
         writer.WriteLine($"    {hook.HookName},");
-        writer.WriteLine($"    &{_typeSystem.MapNamespace(hook.TargetType.Namespace)}::{_typeSystem.ComposeTypeName(hook.TargetType)}::{MapTargetMethodName(hook)},");
+        writer.WriteLine($"    &{_typeSystem.MapNamespace(runtimeTargetType.Namespace)}::{_typeSystem.ComposeTypeName(runtimeTargetType)}::{MapTargetMethodName(hook)},");
         writer.WriteLine($"    {returnType},");
         writer.WriteLine($"    {string.Join(", ", parameters)}) {{");
+
+        WriteHookParameterCasts(writer, hook, runtimeTargetType);
 
         if (prefixHook != null)
             writer.WriteLine($"    {GetHelperFunctionName(prefixHook)}({argumentList});");
 
         if (hook.Method.ReturnType.FullName == "System.Void")
         {
-            writer.WriteLine($"    {hook.HookName}({argumentList});");
+            writer.WriteLine($"    {hook.HookName}({runtimeArgumentList});");
             if (postfixHook != null)
                 writer.WriteLine($"    {GetHelperFunctionName(postfixHook)}({argumentList});");
             writer.WriteLine("    return;");
         }
         else
         {
-            writer.WriteLine($"    auto result = {hook.HookName}({argumentList});");
+            writer.WriteLine($"    auto result = {hook.HookName}({runtimeArgumentList});");
             if (postfixHook != null)
                 writer.WriteLine($"    {GetHelperFunctionName(postfixHook)}({argumentList});");
             writer.WriteLine("    return result;");
@@ -538,6 +631,72 @@ internal sealed class Transpiler
 
         writer.WriteLine("}");
         writer.WriteLine();
+    }
+
+    private List<string> BuildHookRuntimeParameters(HookDefinition hook, TypeReference runtimeTargetType)
+    {
+        var parameters = new List<string>();
+        for (var i = 0; i < hook.Method.Parameters.Count; i++)
+        {
+            var parameter = hook.Method.Parameters[i];
+            var parameterType = i == 0 ? runtimeTargetType : parameter.ParameterType;
+            var parameterName = i == 0 ? GetHookRuntimeParameterName(hook, runtimeTargetType) : CppIdentifier.Sanitize(parameter.Name);
+            parameters.Add($"{_typeSystem.MapType(parameterType)} {parameterName}");
+        }
+
+        return parameters;
+    }
+
+    private string BuildHookRuntimeArgumentList(HookDefinition hook, TypeReference runtimeTargetType)
+    {
+        return string.Join(
+            ", ",
+            hook.Method.Parameters.Select((parameter, index) => index == 0 ? GetHookRuntimeParameterName(hook, runtimeTargetType) : CppIdentifier.Sanitize(parameter.Name))
+        );
+    }
+
+    private static string GetHookRuntimeParameterName(HookDefinition hook, TypeReference runtimeTargetType)
+    {
+        var selfName = CppIdentifier.Sanitize(hook.Method.Parameters[0].Name);
+        return string.Equals(hook.Method.Parameters[0].ParameterType.FullName, runtimeTargetType.FullName, StringComparison.Ordinal) ? selfName : $"{selfName}Raw";
+    }
+
+    private void WriteHookParameterCasts(CppCodeWriter writer, HookDefinition hook, TypeReference runtimeTargetType)
+    {
+        if (hook.Method.Parameters.Count == 0)
+            return;
+
+        var expectedSelfType = hook.Method.Parameters[0].ParameterType;
+        if (string.Equals(expectedSelfType.FullName, runtimeTargetType.FullName, StringComparison.Ordinal))
+            return;
+
+        var selfName = CppIdentifier.Sanitize(hook.Method.Parameters[0].Name);
+        var runtimeSelfName = GetHookRuntimeParameterName(hook, runtimeTargetType);
+        writer.WriteLine($"    auto {selfName} = reinterpret_cast<{_typeSystem.MapType(expectedSelfType)}>({runtimeSelfName});");
+    }
+
+    private TypeReference ResolveRuntimeHookTargetType(HookDefinition hook)
+    {
+        if (hook.IsConstructor)
+            return hook.TargetType;
+
+        try
+        {
+            var resolved = hook.TargetType.Resolve();
+            while (resolved != null)
+            {
+                var match = resolved.Methods.FirstOrDefault(method => string.Equals(method.Name, hook.TargetMethod, StringComparison.Ordinal) && method.Parameters.Count == hook.Method.Parameters.Count - 1);
+                if (match != null)
+                    return _module?.ImportReference(match.DeclaringType) ?? match.DeclaringType;
+
+                resolved = resolved.BaseType?.Resolve();
+            }
+        }
+        catch
+        {
+        }
+
+        return hook.TargetType;
     }
 
     private void WriteHelperFunction(CppCodeWriter writer, HookDefinition hook, IlMethodTranslator bodyGenerator)
@@ -635,7 +794,7 @@ internal sealed class Transpiler
             if (!CanEmitLocalStaticField(field.FieldType))
                 continue;
 
-            defaults.TryGetValue($"field:{field.Name}", out var defaultValueCpp);
+            defaults.TryGetValue($"field:{field.Name}", out var defaultValue);
             _localStaticFields.Add(
                 new LocalStaticFieldEntry
                 {
@@ -643,7 +802,8 @@ internal sealed class Transpiler
                     CppIdentifier = BuildUniqueLocalStaticIdentifier(type.FullName, field.Name),
                     DeclaringTypeFullName = type.FullName,
                     Type = field.FieldType,
-                    DefaultValueCpp = defaultValueCpp,
+                    DefaultValueCpp = defaultValue?.Code,
+                    StringArrayElements = defaultValue?.StringArrayElements,
                 }
             );
         }
@@ -657,6 +817,7 @@ internal sealed class Transpiler
         if (type.BaseType == null)
             throw new InvalidOperationException($"[CustomType] requires a base type: {type.FullName}");
 
+        var defaults = ReadInstanceFieldDefaults(type);
         var fields = new List<CustomTypeFieldEntry>();
         foreach (var field in type.Fields)
         {
@@ -671,6 +832,7 @@ internal sealed class Transpiler
                 {
                     Name = field.Name,
                     CppType = _typeSystem.MapType(field.FieldType),
+                    DefaultValueCpp = defaults.TryGetValue(field.Name, out var defaultValue) ? defaultValue : null,
                 }
             );
         }
@@ -686,6 +848,69 @@ internal sealed class Transpiler
                 Fields = fields,
             }
         );
+    }
+
+    private Dictionary<string, string> ReadInstanceFieldDefaults(TypeDefinition type)
+    {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        var ctor = type.Methods.FirstOrDefault(method => method.IsConstructor && !method.IsStatic && method.HasBody && method.Parameters.Count == 0);
+        if (ctor?.Body == null)
+            return result;
+
+        var stack = new Stack<CppExpression>();
+        foreach (var instruction in ctor.Body.Instructions)
+        {
+            switch (instruction.OpCode.Code)
+            {
+                case Code.Ldarg_0:
+                    stack.Push(new CppExpression { Code = "this" });
+                    break;
+                case Code.Ldc_I4_0:
+                case Code.Ldc_I4_1:
+                case Code.Ldc_I4_2:
+                case Code.Ldc_I4_3:
+                case Code.Ldc_I4_4:
+                case Code.Ldc_I4_5:
+                case Code.Ldc_I4_6:
+                case Code.Ldc_I4_7:
+                case Code.Ldc_I4_8:
+                    stack.Push(new CppExpression { Code = ((int)instruction.OpCode.Code - (int)Code.Ldc_I4_0).ToString(CultureInfo.InvariantCulture) });
+                    break;
+                case Code.Ldc_I4:
+                case Code.Ldc_I4_S:
+                    stack.Push(new CppExpression { Code = Convert.ToInt32(instruction.Operand, CultureInfo.InvariantCulture).ToString(CultureInfo.InvariantCulture) });
+                    break;
+                case Code.Ldstr:
+                    stack.Push(new CppExpression { Code = CppLiteral.String((string)instruction.Operand) });
+                    break;
+                case Code.Stfld:
+                {
+                    if (stack.Count < 2)
+                    {
+                        stack.Clear();
+                        break;
+                    }
+
+                    var value = stack.Pop();
+                    var target = stack.Pop();
+                    var field = (FieldReference)instruction.Operand;
+                    if (target.Code == "this" && field.DeclaringType.FullName == type.FullName)
+                        result[field.Name] = NormalizeDefaultValue(field.FieldType, value.Code);
+                    break;
+                }
+                case Code.Call:
+                case Code.Callvirt:
+                case Code.Ret:
+                case Code.Nop:
+                    stack.Clear();
+                    break;
+                default:
+                    stack.Clear();
+                    break;
+            }
+        }
+
+        return result;
     }
 
     private void LoadBsmlRegistrations(TypeDefinition type)
@@ -1250,9 +1475,6 @@ internal sealed class Transpiler
 
     private bool CanEmitLocalStaticField(TypeReference type)
     {
-        if (_module == null)
-            return false;
-
         if (type is ByReferenceType byReferenceType)
             return CanEmitLocalStaticField(byReferenceType.ElementType);
 
@@ -1272,10 +1494,6 @@ internal sealed class Transpiler
 
             return true;
         }
-
-        var resolved = type.Resolve();
-        if (resolved != null && resolved.Module == _module && resolved.FullName != "System.String")
-            return false;
 
         return true;
     }

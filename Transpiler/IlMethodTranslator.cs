@@ -29,8 +29,6 @@ internal sealed partial class IlMethodTranslator
     private readonly CppTypeSystem _typeSystem;
     private readonly MethodDefinition _method;
     private readonly IList<Instruction> _instructions;
-    private Dictionary<int, string>? _gotoLabels;
-    private bool _useGotoFlow;
     private int _loopLabelCounter;
     private int _temporaryCounter;
 
@@ -63,7 +61,7 @@ internal sealed partial class IlMethodTranslator
         for (var i = 0; i < _method.Body.Variables.Count; i++)
         {
             var variable = _method.Body.Variables[i];
-            if (variable.VariableType is ByReferenceType)
+            if (variable.VariableType is ByReferenceType || ShouldDelayLocalDeclaration(variable.VariableType))
                 continue;
 
             RequiredInclude(variable.VariableType);
@@ -85,42 +83,6 @@ internal sealed partial class IlMethodTranslator
             Statements.RemoveAt(Statements.Count - 1);
     }
 
-    public void TranslateUnstructured()
-    {
-        if (!_method.HasBody || _method.Body == null)
-            return;
-
-        _useGotoFlow = true;
-        _gotoLabels = CollectGotoLabels();
-
-        for (var i = 0; i < _method.Body.Variables.Count; i++)
-        {
-            var variable = _method.Body.Variables[i];
-            if (variable.VariableType is ByReferenceType)
-                continue;
-
-            RequiredInclude(variable.VariableType);
-            var declaration = ShouldValueInitializeLocal(variable.VariableType) ? $"{_typeSystem.MapType(variable.VariableType)} {GetLocalName(i)}{{}};" : $"{_typeSystem.MapType(variable.VariableType)} {GetLocalName(i)};";
-            AppendLine(0, declaration);
-            _declaredLocals.Add(i);
-        }
-
-        if (_declaredLocals.Count > 0)
-            AppendLine(0);
-
-        for (var index = 0; index < _instructions.Count; index++)
-        {
-            if (_gotoLabels.TryGetValue(index, out var label))
-                AppendLine(0, $"{label}:;");
-
-            EmitInstruction(_instructions[index], 0);
-        }
-
-        InsertTemporaryDeclarations();
-
-        while (Statements.Count > 0 && string.IsNullOrWhiteSpace(Statements[^1]))
-            Statements.RemoveAt(Statements.Count - 1);
-    }
 
     private Dictionary<int, string> CollectGotoLabels()
     {
@@ -159,5 +121,10 @@ internal sealed partial class IlMethodTranslator
         Statements.InsertRange(insertIndex, _temporaryDeclarations);
         if (insertIndex < Statements.Count && !string.IsNullOrWhiteSpace(Statements[insertIndex + _temporaryDeclarations.Count]))
             Statements.Insert(insertIndex + _temporaryDeclarations.Count, "");
+    }
+
+    private static bool ShouldDelayLocalDeclaration(TypeReference type)
+    {
+        return type is ArrayType arrayType && arrayType.ElementType.FullName == "System.Object";
     }
 }
