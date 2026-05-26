@@ -83,31 +83,6 @@ internal sealed partial class IlMethodTranslator
             Statements.RemoveAt(Statements.Count - 1);
     }
 
-    private Dictionary<int, string> CollectGotoLabels()
-    {
-        var result = new Dictionary<int, string>();
-        foreach (var instruction in _instructions)
-        {
-            switch (instruction.Operand)
-            {
-                case Instruction targetInstruction:
-                    if (_instructionIndices.TryGetValue(targetInstruction, out var targetIndex) && !result.ContainsKey(targetIndex))
-                        result[targetIndex] = $"label_{targetIndex}";
-                    break;
-                case Instruction[] switchTargets:
-                    foreach (var switchTarget in switchTargets)
-                    {
-                        if (_instructionIndices.TryGetValue(switchTarget, out var switchTargetIndex) && !result.ContainsKey(switchTargetIndex))
-                            result[switchTargetIndex] = $"label_{switchTargetIndex}";
-                    }
-
-                    break;
-            }
-        }
-
-        return result;
-    }
-
     private void InsertTemporaryDeclarations()
     {
         if (_temporaryDeclarations.Count == 0)

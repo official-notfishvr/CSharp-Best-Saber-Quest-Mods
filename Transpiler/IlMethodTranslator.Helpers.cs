@@ -135,11 +135,6 @@ internal sealed partial class IlMethodTranslator
                 or MetadataType.Char;
     }
 
-    private static bool ShouldPredeclareLocal(TypeReference? type)
-    {
-        return true;
-    }
-
     private static bool TryGetLocalIndex(Instruction instruction, out int localIndex)
     {
         switch (instruction.OpCode.Code)
