@@ -83,7 +83,6 @@ internal sealed partial class IlMethodTranslator
             Statements.RemoveAt(Statements.Count - 1);
     }
 
-
     private Dictionary<int, string> CollectGotoLabels()
     {
         var result = new Dictionary<int, string>();

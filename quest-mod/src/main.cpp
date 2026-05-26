@@ -168,6 +168,13 @@ static void InitializeLocalStaticFields() {
     CustomFloorPlugin_QuestCustomFloorMod_TrackLightNames[16] = il2cpp_utils::newcsstr("TopLaser");
 }
 
+static void InitializeConfigDefaults() {
+    PlatformDirectory = il2cpp_utils::newcsstr("/sdcard/ModData/com.beatgames.beatsaber/Mods/CustomPlatforms");
+    MenuPlatformPath = il2cpp_utils::newcsstr("");
+    GameplayPlatformPath = il2cpp_utils::newcsstr("");
+    MultiplayerPlatformPath = il2cpp_utils::newcsstr("");
+}
+
 static void CustomFloorPlugin_QuestCustomFloorMod_ApplyMenuPlatform_GlobalNamespace_MenuEnvironmentManager(GlobalNamespace::MenuEnvironmentManager* manager);
 static void CustomFloorPlugin_QuestCustomFloorMod_ApplyGameplayPlatform();
 static ::StringW CustomFloorPlugin_QuestCustomFloorMod_ChooseGameplayPlatformPath();
@@ -441,9 +448,10 @@ MAKE_HOOK_MATCH(
     &Zenject::MonoInstallerBase::Start,
     void,
     Zenject::MonoInstallerBase* selfRaw) {
-    auto self = reinterpret_cast<GlobalNamespace::GameCoreSceneSetup*>(selfRaw);
+    auto hookSelfMatches = selfRaw != nullptr && ::il2cpp_functions::class_is_assignable_from(classof(GlobalNamespace::GameCoreSceneSetup*), reinterpret_cast<Il2CppObject*>(selfRaw)->klass);
+    auto self = hookSelfMatches ? reinterpret_cast<GlobalNamespace::GameCoreSceneSetup*>(selfRaw) : nullptr;
     GlobalNamespace_GameCoreSceneSetup_Start_GlobalNamespace_GameCoreSceneSetup_Hook(selfRaw);
-    OnGameCoreSceneSetupStart(self);
+    if (hookSelfMatches) OnGameCoreSceneSetupStart(self);
     return;
 }
 
@@ -492,6 +500,7 @@ MAKE_HOOK_MATCH(
 
 MOD_EXTERN_FUNC void late_load() noexcept {
     il2cpp_functions::Init();
+    InitializeConfigDefaults();
     InitializeLocalStaticFields();
     custom_types::Register::AutoRegister();
     PaperLogger.info("Installing hooks...");

@@ -257,11 +257,7 @@ internal sealed class Transpiler
                         break;
                     }
 
-                    stack.Push(new CppExpression
-                    {
-                        Code = "",
-                        StringArrayElements = Enumerable.Repeat<string?>(null, length).ToList(),
-                    });
+                    stack.Push(new CppExpression { Code = "", StringArrayElements = Enumerable.Repeat<string?>(null, length).ToList() });
                     break;
                 }
                 case Code.Stelem_Ref:
@@ -292,9 +288,8 @@ internal sealed class Transpiler
                     var value = stack.Pop();
                     var field = (FieldReference)instruction.Operand;
                     var propertyName = TryGetAutoPropertyName(field.Name);
-                    result[propertyName != null ? $"property:{propertyName}" : $"field:{field.Name}"] = value.StringArrayElements != null
-                        ? new StaticDefaultValue { StringArrayElements = value.StringArrayElements.Select(item => item ?? CppLiteral.String("")).ToArray() }
-                        : new StaticDefaultValue { Code = NormalizeDefaultValue(field.FieldType, value.Code) };
+                    result[propertyName != null ? $"property:{propertyName}" : $"field:{field.Name}"] =
+                        value.StringArrayElements != null ? new StaticDefaultValue { StringArrayElements = value.StringArrayElements.Select(item => item ?? CppLiteral.String("")).ToArray() } : new StaticDefaultValue { Code = NormalizeDefaultValue(field.FieldType, value.Code) };
                     break;
                 }
                 case Code.Ret:
@@ -328,7 +323,7 @@ internal sealed class Transpiler
         foreach (var config in _configValues)
         {
             var cppType = _typeSystem.MapType(config.Type);
-            var defaultValue = config.DefaultValueCpp ?? _typeSystem.GetDefaultValue(config.Type);
+            var defaultValue = GetGlobalInitializerValue(config.Type, config.DefaultValueCpp);
             writer.WriteLine($"static {cppType} {config.CppIdentifier} = {defaultValue};");
         }
 
@@ -451,6 +446,7 @@ internal sealed class Transpiler
         writer.WriteLine();
 
         WriteLocalStaticInitializers(writer);
+        WriteConfigInitializers(writer);
 
         foreach (var helperMethod in helperMethodEmissions)
             WriteHelperPrototype(writer, helperMethod);
@@ -474,6 +470,8 @@ internal sealed class Transpiler
 
         writer.WriteLine("MOD_EXTERN_FUNC void late_load() noexcept {");
         writer.WriteLine("    il2cpp_functions::Init();");
+        if (_configValues.Any(config => RequiresRuntimeInitialization(config.Type, config.DefaultValueCpp)))
+            writer.WriteLine("    InitializeConfigDefaults();");
         if (_localStaticFields.Any(field => field.StringArrayElements != null))
             writer.WriteLine("    InitializeLocalStaticFields();");
         if (_customTypes.Count > 0)
@@ -521,6 +519,32 @@ internal sealed class Transpiler
         }
         writer.WriteLine("}");
         writer.WriteLine();
+    }
+
+    private void WriteConfigInitializers(CppCodeWriter writer)
+    {
+        var runtimeConfigs = _configValues.Where(config => RequiresRuntimeInitialization(config.Type, config.DefaultValueCpp)).ToList();
+        if (runtimeConfigs.Count == 0)
+            return;
+
+        writer.WriteLine("static void InitializeConfigDefaults() {");
+        foreach (var config in runtimeConfigs)
+        {
+            var defaultValue = config.DefaultValueCpp ?? _typeSystem.GetDefaultValue(config.Type);
+            writer.WriteLine($"    {config.CppIdentifier} = {defaultValue};");
+        }
+        writer.WriteLine("}");
+        writer.WriteLine();
+    }
+
+    private string GetGlobalInitializerValue(TypeReference type, string? defaultValue)
+    {
+        return RequiresRuntimeInitialization(type, defaultValue) ? _typeSystem.GetDefaultValue(type) : defaultValue ?? _typeSystem.GetDefaultValue(type);
+    }
+
+    private static bool RequiresRuntimeInitialization(TypeReference type, string? defaultValue)
+    {
+        return type.FullName == "System.String" && !string.IsNullOrWhiteSpace(defaultValue) && defaultValue.Contains("newcsstr", StringComparison.Ordinal);
     }
 
     private void WriteCustomTypes(CppCodeWriter writer)
@@ -577,7 +601,14 @@ internal sealed class Transpiler
         writer.WriteLine($"    {returnType},");
         writer.WriteLine($"    {string.Join(", ", parameters)}) {{");
 
-        WriteHookParameterCasts(writer, hook, runtimeTargetType);
+        if (RequiresHookSelfRuntimeCheck(hook, runtimeTargetType))
+        {
+            writer.WriteLine($"    if (!({BuildHookSelfMatchesExpression(hook, runtimeTargetType)})) {{");
+            WriteOriginalFallback(writer, hook, runtimeTargetType, 2);
+            writer.WriteLine("    }");
+        }
+
+        WriteHookParameterCasts(writer, hook, runtimeTargetType, defineMatchFlag: false);
 
         foreach (var line in bodyGenerator.Statements)
             writer.WriteLine($"    {line}");
@@ -609,23 +640,39 @@ internal sealed class Transpiler
         writer.WriteLine($"    {returnType},");
         writer.WriteLine($"    {string.Join(", ", parameters)}) {{");
 
-        WriteHookParameterCasts(writer, hook, runtimeTargetType);
+        var hasRuntimeSelfCheck = RequiresHookSelfRuntimeCheck(hook, runtimeTargetType);
+        WriteHookParameterCasts(writer, hook, runtimeTargetType, defineMatchFlag: hasRuntimeSelfCheck);
 
         if (prefixHook != null)
-            writer.WriteLine($"    {GetHelperFunctionName(prefixHook)}({argumentList});");
+        {
+            if (hasRuntimeSelfCheck)
+                writer.WriteLine($"    if (hookSelfMatches) {GetHelperFunctionName(prefixHook)}({argumentList});");
+            else
+                writer.WriteLine($"    {GetHelperFunctionName(prefixHook)}({argumentList});");
+        }
 
         if (hook.Method.ReturnType.FullName == "System.Void")
         {
             writer.WriteLine($"    {hook.HookName}({runtimeArgumentList});");
             if (postfixHook != null)
-                writer.WriteLine($"    {GetHelperFunctionName(postfixHook)}({argumentList});");
+            {
+                if (hasRuntimeSelfCheck)
+                    writer.WriteLine($"    if (hookSelfMatches) {GetHelperFunctionName(postfixHook)}({argumentList});");
+                else
+                    writer.WriteLine($"    {GetHelperFunctionName(postfixHook)}({argumentList});");
+            }
             writer.WriteLine("    return;");
         }
         else
         {
             writer.WriteLine($"    auto result = {hook.HookName}({runtimeArgumentList});");
             if (postfixHook != null)
-                writer.WriteLine($"    {GetHelperFunctionName(postfixHook)}({argumentList});");
+            {
+                if (hasRuntimeSelfCheck)
+                    writer.WriteLine($"    if (hookSelfMatches) {GetHelperFunctionName(postfixHook)}({argumentList});");
+                else
+                    writer.WriteLine($"    {GetHelperFunctionName(postfixHook)}({argumentList});");
+            }
             writer.WriteLine("    return result;");
         }
 
@@ -649,10 +696,7 @@ internal sealed class Transpiler
 
     private string BuildHookRuntimeArgumentList(HookDefinition hook, TypeReference runtimeTargetType)
     {
-        return string.Join(
-            ", ",
-            hook.Method.Parameters.Select((parameter, index) => index == 0 ? GetHookRuntimeParameterName(hook, runtimeTargetType) : CppIdentifier.Sanitize(parameter.Name))
-        );
+        return string.Join(", ", hook.Method.Parameters.Select((parameter, index) => index == 0 ? GetHookRuntimeParameterName(hook, runtimeTargetType) : CppIdentifier.Sanitize(parameter.Name)));
     }
 
     private static string GetHookRuntimeParameterName(HookDefinition hook, TypeReference runtimeTargetType)
@@ -661,7 +705,7 @@ internal sealed class Transpiler
         return string.Equals(hook.Method.Parameters[0].ParameterType.FullName, runtimeTargetType.FullName, StringComparison.Ordinal) ? selfName : $"{selfName}Raw";
     }
 
-    private void WriteHookParameterCasts(CppCodeWriter writer, HookDefinition hook, TypeReference runtimeTargetType)
+    private void WriteHookParameterCasts(CppCodeWriter writer, HookDefinition hook, TypeReference runtimeTargetType, bool defineMatchFlag)
     {
         if (hook.Method.Parameters.Count == 0)
             return;
@@ -672,7 +716,42 @@ internal sealed class Transpiler
 
         var selfName = CppIdentifier.Sanitize(hook.Method.Parameters[0].Name);
         var runtimeSelfName = GetHookRuntimeParameterName(hook, runtimeTargetType);
-        writer.WriteLine($"    auto {selfName} = reinterpret_cast<{_typeSystem.MapType(expectedSelfType)}>({runtimeSelfName});");
+        if (defineMatchFlag)
+        {
+            writer.WriteLine($"    auto hookSelfMatches = {BuildHookSelfMatchesExpression(hook, runtimeTargetType)};");
+            writer.WriteLine($"    auto {selfName} = hookSelfMatches ? reinterpret_cast<{_typeSystem.MapType(expectedSelfType)}>({runtimeSelfName}) : nullptr;");
+        }
+        else
+        {
+            writer.WriteLine($"    auto {selfName} = reinterpret_cast<{_typeSystem.MapType(expectedSelfType)}>({runtimeSelfName});");
+        }
+    }
+
+    private bool RequiresHookSelfRuntimeCheck(HookDefinition hook, TypeReference runtimeTargetType)
+    {
+        return hook.Method.Parameters.Count > 0 && !string.Equals(hook.Method.Parameters[0].ParameterType.FullName, runtimeTargetType.FullName, StringComparison.Ordinal);
+    }
+
+    private string BuildHookSelfMatchesExpression(HookDefinition hook, TypeReference runtimeTargetType)
+    {
+        var expectedSelfType = hook.Method.Parameters[0].ParameterType;
+        var runtimeSelfName = GetHookRuntimeParameterName(hook, runtimeTargetType);
+        return $"{runtimeSelfName} != nullptr && ::il2cpp_functions::class_is_assignable_from(classof({_typeSystem.MapType(expectedSelfType)}), reinterpret_cast<Il2CppObject*>({runtimeSelfName})->klass)";
+    }
+
+    private void WriteOriginalFallback(CppCodeWriter writer, HookDefinition hook, TypeReference runtimeTargetType, int indentLevel)
+    {
+        var indent = new string(' ', indentLevel * 4);
+        var runtimeArgumentList = BuildHookRuntimeArgumentList(hook, runtimeTargetType);
+        if (hook.Method.ReturnType.FullName == "System.Void")
+        {
+            writer.WriteLine($"{indent}{hook.HookName}({runtimeArgumentList});");
+            writer.WriteLine($"{indent}return;");
+        }
+        else
+        {
+            writer.WriteLine($"{indent}return {hook.HookName}({runtimeArgumentList});");
+        }
     }
 
     private TypeReference ResolveRuntimeHookTargetType(HookDefinition hook)
@@ -692,9 +771,7 @@ internal sealed class Transpiler
                 resolved = resolved.BaseType?.Resolve();
             }
         }
-        catch
-        {
-        }
+        catch { }
 
         return hook.TargetType;
     }
@@ -1332,63 +1409,81 @@ internal sealed class Transpiler
     private static string SimplifySingleFunctionBlock(string block)
     {
         var inlineIfRegex = new Regex(@"^(?<assignIndent>\s*)(?<name>local\d+(?:_\d+)?) = (?<expr>.+);\r?\n(?<ifIndent>\s*)if \((?:\()?(?<condition>\k<name>)(?:\))?\)", RegexOptions.Multiline);
-        block = inlineIfRegex.Replace(block, match =>
-        {
-            var localName = match.Groups["name"].Value;
-            var usageCount = Regex.Matches(block, $@"\b{Regex.Escape(localName)}\b").Count;
-            return usageCount == 3 ? $"{match.Groups["ifIndent"].Value}if ({match.Groups["expr"].Value})" : match.Value;
-        });
+        block = inlineIfRegex.Replace(
+            block,
+            match =>
+            {
+                var localName = match.Groups["name"].Value;
+                var usageCount = Regex.Matches(block, $@"\b{Regex.Escape(localName)}\b").Count;
+                return usageCount == 3 ? $"{match.Groups["ifIndent"].Value}if ({match.Groups["expr"].Value})" : match.Value;
+            }
+        );
 
         var duplicateExprIfRegex = new Regex(@"^(?<assignIndent>\s*)(?<name>local\d+(?:_\d+)?) = (?<expr>.+);\r?\n(?<ifIndent>\s*)if \((?:\()?(?<condition>\k<expr>)(?:\))?\)", RegexOptions.Multiline);
-        block = duplicateExprIfRegex.Replace(block, match =>
-        {
-            var localName = match.Groups["name"].Value;
-            var usageCount = Regex.Matches(block, $@"\b{Regex.Escape(localName)}\b").Count;
-            return usageCount == 2 ? $"{match.Groups["ifIndent"].Value}if ({match.Groups["expr"].Value})" : match.Value;
-        });
+        block = duplicateExprIfRegex.Replace(
+            block,
+            match =>
+            {
+                var localName = match.Groups["name"].Value;
+                var usageCount = Regex.Matches(block, $@"\b{Regex.Escape(localName)}\b").Count;
+                return usageCount == 2 ? $"{match.Groups["ifIndent"].Value}if ({match.Groups["expr"].Value})" : match.Value;
+            }
+        );
 
         var wrappedDuplicateExprIfRegex = new Regex(@"^(?<assignIndent>\s*)(?<name>local\d+(?:_\d+)?) = \((?<expr>.+)\);\r?\n(?<ifIndent>\s*)if \((?:\()?(?<condition>\k<expr>)(?:\))?\)", RegexOptions.Multiline);
-        block = wrappedDuplicateExprIfRegex.Replace(block, match =>
-        {
-            var localName = match.Groups["name"].Value;
-            var usageCount = Regex.Matches(block, $@"\b{Regex.Escape(localName)}\b").Count;
-            return usageCount == 2 ? $"{match.Groups["ifIndent"].Value}if ({match.Groups["expr"].Value})" : match.Value;
-        });
+        block = wrappedDuplicateExprIfRegex.Replace(
+            block,
+            match =>
+            {
+                var localName = match.Groups["name"].Value;
+                var usageCount = Regex.Matches(block, $@"\b{Regex.Escape(localName)}\b").Count;
+                return usageCount == 2 ? $"{match.Groups["ifIndent"].Value}if ({match.Groups["expr"].Value})" : match.Value;
+            }
+        );
 
         var inlineReturnRegex = new Regex(@"^(?<assignIndent>\s*)(?<name>local\d+(?:_\d+)?) = (?<expr>.+);\r?\n(?<returnIndent>\s*)return (?<returnName>\k<name>);", RegexOptions.Multiline);
-        block = inlineReturnRegex.Replace(block, match =>
-        {
-            var localName = match.Groups["name"].Value;
-            var usageCount = Regex.Matches(block, $@"\b{Regex.Escape(localName)}\b").Count;
-            return usageCount == 3 ? $"{match.Groups["returnIndent"].Value}return {match.Groups["expr"].Value};" : match.Value;
-        });
+        block = inlineReturnRegex.Replace(
+            block,
+            match =>
+            {
+                var localName = match.Groups["name"].Value;
+                var usageCount = Regex.Matches(block, $@"\b{Regex.Escape(localName)}\b").Count;
+                return usageCount == 3 ? $"{match.Groups["returnIndent"].Value}return {match.Groups["expr"].Value};" : match.Value;
+            }
+        );
 
         var localAssignmentRegex = new Regex(@"^(?<indent>\s*)(?<name>local\d+(?:_\d+)?) = (?<expr>.+);\s*$", RegexOptions.Multiline);
         var changed = true;
         while (changed)
         {
             changed = false;
-            block = localAssignmentRegex.Replace(block, match =>
-            {
-                var localName = match.Groups["name"].Value;
-                var usageCount = Regex.Matches(block, $@"\b{Regex.Escape(localName)}\b").Count;
-                if (usageCount == 2)
+            block = localAssignmentRegex.Replace(
+                block,
+                match =>
                 {
-                    changed = true;
-                    return string.Empty;
-                }
+                    var localName = match.Groups["name"].Value;
+                    var usageCount = Regex.Matches(block, $@"\b{Regex.Escape(localName)}\b").Count;
+                    if (usageCount == 2)
+                    {
+                        changed = true;
+                        return string.Empty;
+                    }
 
-                return match.Value;
-            });
+                    return match.Value;
+                }
+            );
         }
 
         var localDeclarationRegex = new Regex(@"^(?<indent>\s*)(?<type>[\w:<>]+(?:\s*[*&])?)\s+(?<name>local\d+(?:_\d+)?)\{\};\s*$", RegexOptions.Multiline);
-        block = localDeclarationRegex.Replace(block, match =>
-        {
-            var localName = match.Groups["name"].Value;
-            var usageCount = Regex.Matches(block, $@"\b{Regex.Escape(localName)}\b").Count;
-            return usageCount <= 1 ? string.Empty : match.Value;
-        });
+        block = localDeclarationRegex.Replace(
+            block,
+            match =>
+            {
+                var localName = match.Groups["name"].Value;
+                var usageCount = Regex.Matches(block, $@"\b{Regex.Escape(localName)}\b").Count;
+                return usageCount <= 1 ? string.Empty : match.Value;
+            }
+        );
 
         return block;
     }

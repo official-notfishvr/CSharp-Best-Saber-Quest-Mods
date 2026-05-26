@@ -1529,8 +1529,6 @@ internal sealed partial class IlMethodTranslator
     private static string NegateBooleanExpression(string expression)
     {
         var normalizedExpression = expression.Trim();
-        return normalizedExpression.StartsWith("!(", StringComparison.Ordinal) && normalizedExpression.EndsWith(")", StringComparison.Ordinal)
-            ? normalizedExpression[2..^1]
-            : $"!({normalizedExpression})";
+        return normalizedExpression.StartsWith("!(", StringComparison.Ordinal) && normalizedExpression.EndsWith(")", StringComparison.Ordinal) ? normalizedExpression[2..^1] : $"!({normalizedExpression})";
     }
 }

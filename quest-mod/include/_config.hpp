@@ -5,7 +5,7 @@
 
 #include "beatsaber-hook/shared/utils/il2cpp-utils.hpp"
 
-static ::StringW PlatformDirectory = il2cpp_utils::newcsstr("/sdcard/ModData/com.beatgames.beatsaber/Mods/CustomPlatforms");
-static ::StringW MenuPlatformPath = il2cpp_utils::newcsstr("");
-static ::StringW GameplayPlatformPath = il2cpp_utils::newcsstr("");
-static ::StringW MultiplayerPlatformPath = il2cpp_utils::newcsstr("");
+static ::StringW PlatformDirectory = nullptr;
+static ::StringW MenuPlatformPath = nullptr;
+static ::StringW GameplayPlatformPath = nullptr;
+static ::StringW MultiplayerPlatformPath = nullptr;
