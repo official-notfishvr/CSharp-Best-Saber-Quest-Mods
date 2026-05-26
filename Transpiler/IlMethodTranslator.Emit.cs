@@ -736,7 +736,7 @@ internal sealed partial class IlMethodTranslator
 
         if (method.DeclaringType.FullName == "System.Console" && method.Name is "WriteLine" or "Write")
         {
-            AppendLine(indentLevel, $"PaperLogger.info({string.Join(", ", args.Select(arg => arg.Code))});");
+            AppendLine(indentLevel, BuildConsoleLogStatement(args));
             return;
         }
 
@@ -877,6 +877,30 @@ internal sealed partial class IlMethodTranslator
             PreferAutoDeclaration = method is GenericInstanceMethod,
             HasSideEffects = true,
         };
+    }
+
+    private static string BuildConsoleLogStatement(IReadOnlyList<CppExpression> args)
+    {
+        if (args.Count == 0)
+            return "PaperLogger.info(\"\");";
+
+        if (args.Count == 1 && TryUnwrapNewStringLiteral(args[0].Code, out var message))
+            return $"PaperLogger.info({message});";
+
+        return $"PaperLogger.info(\"{{}}\", {string.Join(", ", args.Select(arg => arg.Code))});";
+    }
+
+    private static bool TryUnwrapNewStringLiteral(string expression, out string cStringLiteral)
+    {
+        const string prefix = "il2cpp_utils::newcsstr(";
+        cStringLiteral = "";
+
+        var trimmedExpression = expression.Trim();
+        if (!trimmedExpression.StartsWith(prefix, StringComparison.Ordinal) || !trimmedExpression.EndsWith(")", StringComparison.Ordinal))
+            return false;
+
+        cStringLiteral = trimmedExpression[prefix.Length..^1];
+        return cStringLiteral.StartsWith("\"", StringComparison.Ordinal) && cStringLiteral.EndsWith("\"", StringComparison.Ordinal);
     }
 
     private CppExpression BuildRuntimeCallValue(MethodReference method, CppExpression? instance, IReadOnlyList<CppExpression> args, string emittedMethodName)
