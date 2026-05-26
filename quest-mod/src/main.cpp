@@ -170,8 +170,8 @@ static void InitializeLocalStaticFields() {
 
 static void InitializeConfigDefaults() {
     PlatformDirectory = il2cpp_utils::newcsstr("/sdcard/ModData/com.beatgames.beatsaber/Mods/CustomPlatforms");
-    MenuPlatformPath = il2cpp_utils::newcsstr("");
-    GameplayPlatformPath = il2cpp_utils::newcsstr("");
+    MenuPlatformPath = il2cpp_utils::newcsstr("TechWay 30.plat");
+    GameplayPlatformPath = il2cpp_utils::newcsstr("TechWay 30.plat");
     MultiplayerPlatformPath = il2cpp_utils::newcsstr("");
 }
 
@@ -271,12 +271,12 @@ static CustomFloorPlugin::CustomPlatform* CustomFloorPlugin_QuestCustomFloorMod_
         return nullptr;
     }
     asset = bundle->LoadAsset<UnityEngine::GameObject*>(il2cpp_utils::newcsstr("_CustomPlatform"));
-    bundle->Unload(0);
     if (asset == nullptr) {
         return nullptr;
     }
     prefab = reinterpret_cast<UnityEngine::GameObject*>(asset);
     activePlatform = UnityEngine::Object::Instantiate<UnityEngine::GameObject*>(prefab, parent);
+    bundle->Unload(0);
     if (activePlatform == nullptr) {
         return nullptr;
     }
@@ -329,7 +329,9 @@ static void CustomFloorPlugin_QuestCustomFloorMod_ApplyMenuVisibility_GlobalName
     bool showGround{};
 
     environments = manager->____data;
-
+    if (!(environments)) {
+        return;
+    }
     i = 0;
     while (true) {
         if (!(((i < static_cast<int32_t>(static_cast<int>(environments.size())))))) {

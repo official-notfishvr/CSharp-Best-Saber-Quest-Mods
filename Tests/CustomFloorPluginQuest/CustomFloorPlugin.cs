@@ -16,10 +16,10 @@ public static class QuestCustomFloorMod
     public static string PlatformDirectory { get; set; } = "/sdcard/ModData/com.beatgames.beatsaber/Mods/CustomPlatforms";
 
     [Config(Description = "Platform bundle to load in the menu scene.")]
-    public static string MenuPlatformPath { get; set; } = "";
+    public static string MenuPlatformPath { get; set; } = "TechWay 30.plat";
 
     [Config(Description = "Platform bundle to load in standard gameplay scenes.")]
-    public static string GameplayPlatformPath { get; set; } = "";
+    public static string GameplayPlatformPath { get; set; } = "TechWay 30.plat";
 
     [Config(Description = "Platform bundle to load in multiplayer gameplay scenes. Falls back to GameplayPlatformPath when empty.")]
     public static string MultiplayerPlatformPath { get; set; } = "";
@@ -135,12 +135,15 @@ public static class QuestCustomFloorMod
             return null;
 
         var asset = bundle.LoadAsset("_CustomPlatform", typeof(GameObject));
-        bundle.Unload(false);
         if (asset == null)
+        {
+            bundle.Unload(false);
             return null;
+        }
 
         var prefab = (GameObject)asset;
         activePlatform = (GameObject)UnityEngine.Object.Instantiate(prefab, parent);
+        bundle.Unload(false);
         if (activePlatform == null)
             return null;
 

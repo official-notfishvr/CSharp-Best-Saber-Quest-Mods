@@ -562,7 +562,13 @@ internal sealed partial class IlMethodTranslator
         if (literalInstruction.OpCode.Code is not (Code.Ldc_I4_0 or Code.Ldc_I4_1))
             return false;
 
-        return TryGetLocalIndex(_instructions[targetIndex], out _);
+        if (TryGetLocalIndex(_instructions[targetIndex], out var localIndex))
+        {
+            var variable = _method.Body!.Variables[localIndex];
+            return variable.VariableType.FullName == "System.Boolean";
+        }
+
+        return false;
     }
 
     private bool TryBuildReturnFromBranchTarget(Instruction targetInstruction, out string returnExpression)
@@ -726,7 +732,13 @@ internal sealed partial class IlMethodTranslator
         if (loadInstruction.OpCode.Code is not (Code.Ldc_I4_0 or Code.Ldc_I4_1))
             return false;
 
-        return TryGetLocalIndex(_instructions[targetIndex + 1], out _);
+        if (TryGetLocalIndex(_instructions[targetIndex + 1], out var localIndex))
+        {
+            var variable = _method.Body!.Variables[localIndex];
+            return variable.VariableType.FullName == "System.Boolean";
+        }
+
+        return false;
     }
 
     private bool TryTranslateCompoundBoolean(ref int index, int indentLevel)
