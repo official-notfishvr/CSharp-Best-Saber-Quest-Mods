@@ -30,6 +30,25 @@ internal sealed class CppTypeSystem
 
     private static readonly HashSet<string> BuiltinNamespaceTypes = new(StringComparer.Ordinal) { "System.String", "System.Object" };
 
+    private static readonly Dictionary<string, string?> IncludeOverrides = new(StringComparer.Ordinal)
+    {
+        ["CoreMod.BSMLLite"] = null,
+        ["BSML.Lite.GameObjectWrapper"] = "bsml/shared/BSML-Lite/GameObjectWrapper.hpp",
+        ["BSML.Lite.TransformWrapper"] = "bsml/shared/BSML-Lite/TransformWrapper.hpp",
+        ["BSML.ClickableImage"] = "bsml/shared/BSML/Components/ClickableImage.hpp",
+        ["BSML.ClickableText"] = "bsml/shared/BSML/Components/ClickableText.hpp",
+        ["BSML.ColorSetting"] = "bsml/shared/BSML/Components/Settings/ColorSetting.hpp",
+        ["BSML.DropdownListSetting"] = "bsml/shared/BSML/Components/Settings/DropdownListSetting.hpp",
+        ["BSML.FloatingScreen"] = "bsml/shared/BSML/FloatingScreen/FloatingScreen.hpp",
+        ["BSML.IncrementSetting"] = "bsml/shared/BSML/Components/Settings/IncrementSetting.hpp",
+        ["BSML.ModalColorPicker"] = "bsml/shared/BSML/Components/ModalColorPicker.hpp",
+        ["BSML.ModalView"] = "bsml/shared/BSML/Components/ModalView.hpp",
+        ["BSML.ProgressBar"] = "bsml/shared/BSML/Components/ProgressBar.hpp",
+        ["BSML.Side"] = "bsml/shared/BSML/FloatingScreen/Side.hpp",
+        ["BSML.SliderSetting"] = "bsml/shared/BSML/Components/Settings/SliderSetting.hpp",
+        ["BSML.ToggleSetting"] = "bsml/shared/BSML/Components/Settings/ToggleSetting.hpp",
+    };
+
     public string MapType(TypeReference type)
     {
         var normalized = Normalize(type);
@@ -88,6 +107,9 @@ internal sealed class CppTypeSystem
             return null;
 
         var normalized = Normalize(type);
+        if (IncludeOverrides.TryGetValue(normalized.FullName, out var overrideInclude))
+            return overrideInclude;
+
         if (normalized.FullName == "System.String")
             return "System/String.hpp";
 

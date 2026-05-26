@@ -26,7 +26,13 @@ public static class TestMod
     public static void OpenSampleMenu() { }
 
     [GameplaySetupTab("SampleMod", MenuType = BsmlMenuType.All)]
-    public static void OnGameplaySetupTabActivate(GameObject root, bool firstActivation) { }
+    public static void OnGameplaySetupTabActivate(GameObject root, bool firstActivation)
+    {
+        if (!firstActivation)
+            return;
+
+        BSMLLite.CreateText(root, "SampleMod", 4.0f, BSMLLite.Vector2(0.0f, 0.0f), BSMLLite.Vector2(60.0f, 8.0f));
+    }
 
     [Hook(typeof(StandardLevelDetailViewController), nameof(StandardLevelDetailViewController.DidActivate), Phase = HookPhase.Prefix)]
     public static void OnLevelScreenActivatePrefix(StandardLevelDetailViewController self, bool firstActivation, bool addedToHierarchy, bool screenSystemEnabling)

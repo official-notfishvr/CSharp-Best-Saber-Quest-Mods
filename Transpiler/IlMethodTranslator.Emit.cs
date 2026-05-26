@@ -767,6 +767,16 @@ internal sealed partial class IlMethodTranslator
             return;
         }
 
+        if (TryBuildBsmlLiteIntrinsic(method, args, indentLevel, out var bsmlLiteExpression))
+        {
+            if (method.ReturnType.FullName == "System.Void")
+                AppendLine(indentLevel, $"{bsmlLiteExpression.Code};");
+            else
+                _stack.Push(bsmlLiteExpression);
+
+            return;
+        }
+
         RequiredInclude(method.ReturnType);
         if (!method.HasThis)
             RequiredInclude(method.DeclaringType);
@@ -976,6 +986,98 @@ internal sealed partial class IlMethodTranslator
         }
 
         return _metadataIndex.ResolveMethodName(method.DeclaringType.FullName, method.Name, method.Parameters.Count) ?? method.Name;
+    }
+
+    private bool TryBuildBsmlLiteIntrinsic(MethodReference method, IReadOnlyList<CppExpression> args, int indentLevel, out CppExpression expression)
+    {
+        expression = null!;
+        if (method.HasThis || method.DeclaringType.FullName != "CoreMod.BSMLLite")
+            return false;
+
+        switch (method.Name)
+        {
+            case "Vector2" when args.Count == 2:
+                RequiredIncludes.Add("UnityEngine/Vector2.hpp");
+                expression = new CppExpression { Code = $"UnityEngine::Vector2{{{args[0].Code}, {args[1].Code}}}", Type = method.ReturnType, PreferAutoDeclaration = true };
+                return true;
+            case "Vector3" when args.Count == 3:
+                RequiredIncludes.Add("UnityEngine/Vector3.hpp");
+                expression = new CppExpression { Code = $"UnityEngine::Vector3{{{args[0].Code}, {args[1].Code}, {args[2].Code}}}", Type = method.ReturnType, PreferAutoDeclaration = true };
+                return true;
+            case "Color" when args.Count == 4:
+                RequiredIncludes.Add("UnityEngine/Color.hpp");
+                expression = new CppExpression { Code = $"UnityEngine::Color{{{args[0].Code}, {args[1].Code}, {args[2].Code}, {args[3].Code}}}", Type = method.ReturnType, PreferAutoDeclaration = true };
+                return true;
+        }
+
+        var include = GetBsmlLiteInclude(method.Name);
+        if (include == null)
+            return false;
+
+        RequiredIncludes.Add(include);
+        RequiredInclude(method.ReturnType);
+
+        var normalizedArgs = args.Select((arg, index) => NormalizeBsmlLiteArgument(method, arg, index)).ToList();
+        var call = $"BSML::Lite::{method.Name}({string.Join(", ", normalizedArgs.Select(arg => arg.Code))})";
+        expression = new CppExpression
+        {
+            Code = call,
+            Type = method.ReturnType,
+            PreferAutoDeclaration = true,
+            HasSideEffects = true,
+        };
+        return true;
+    }
+
+    private static string? GetBsmlLiteInclude(string methodName)
+    {
+        return methodName switch
+        {
+            "AddHoverHint" or "CreateCanvas" or "CreateFloatingScreen" or "CreateProgressBar" => "bsml/shared/BSML-Lite/Creation/Misc.hpp",
+            "CreateUIButton" or "SetButtonText" or "SetButtonTextSize" or "ToggleButtonWordWrapping" or "SetButtonIcon" or "SetButtonBackground" or "SetButtonSprites" => "bsml/shared/BSML-Lite/Creation/Buttons.hpp",
+            "CreateText" or "CreateClickableText" => "bsml/shared/BSML-Lite/Creation/Text.hpp",
+            "CreateImage" or "CreateClickableImage" or "CreateRawImage" or "FileToSprite" or "TextureToSprite" or "Base64ToSprite" or "ArrayToSprite" => "bsml/shared/BSML-Lite/Creation/Image.hpp",
+            "CreateVerticalLayoutGroup" or "CreateHorizontalLayoutGroup" or "CreateGridLayoutGroup" or "CreateStackLayoutGroup" or "CreateScrollableSettingsContainer" or "CreateScrollView" or "CreateModal" or "CreateScrollableModalContainer" or "CreateModifierContainer" => "bsml/shared/BSML-Lite/Creation/Layout.hpp",
+            _ => null,
+        };
+    }
+
+    private CppExpression NormalizeBsmlLiteArgument(MethodReference method, CppExpression arg, int index)
+    {
+        if (index < method.Parameters.Count && method.Parameters[index].ParameterType.FullName == "BSML.Side")
+        {
+            return CopyExpression(arg, $"static_cast<BSML::Side>({arg.Code})");
+        }
+
+        if (ShouldPassBsmlLiteStringView(method, index) && TryUnwrapNewStringLiteral(arg.Code, out var literal))
+        {
+            return CopyExpression(arg, literal);
+        }
+
+        return arg;
+    }
+
+    private static CppExpression CopyExpression(CppExpression source, string code)
+    {
+        return new CppExpression
+        {
+            Code = code,
+            Type = source.Type,
+            TypeToken = source.TypeToken,
+            StringArrayElements = source.StringArrayElements,
+            HasSideEffects = source.HasSideEffects,
+            PreferAutoDeclaration = source.PreferAutoDeclaration,
+        };
+    }
+
+    private static bool ShouldPassBsmlLiteStringView(MethodReference method, int index)
+    {
+        return method.Name switch
+        {
+            "CreateUIButton" => index == 2 && method.Parameters.Count > 2 && method.Parameters[index].ParameterType.FullName == "System.String",
+            "FileToSprite" or "Base64ToSprite" => index == 0,
+            _ => false,
+        };
     }
 
     private bool ShouldUseRuntimeMethodInvocation(MethodReference method)

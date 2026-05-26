@@ -239,6 +239,17 @@ internal sealed partial class IlMethodTranslator
         var declaringTypeName = _typeSystem.MapType(declaringType).TrimEnd('*');
         var argumentList = string.Join(", ", args.Select(arg => arg.Code));
 
+        if (declaringType.FullName is "BSML.Lite.GameObjectWrapper" or "BSML.Lite.TransformWrapper")
+        {
+            return new CppExpression
+            {
+                Code = $"{declaringTypeName}({argumentList})",
+                Type = declaringType,
+                PreferAutoDeclaration = true,
+                HasSideEffects = true,
+            };
+        }
+
         if (declaringType.IsValueType || declaringType.Resolve()?.IsValueType == true)
         {
             var mappedType = _typeSystem.MapType(declaringType);

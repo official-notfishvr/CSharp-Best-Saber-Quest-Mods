@@ -8,8 +8,4 @@
     <ItemGroup>
         <ProjectReference Include="..\..\CoreMod\CoreMod.csproj" />
     </ItemGroup>
-    <ItemGroup>
-        <Compile Remove="GeneratedTypes.cs" />
-        <Compile Include="..\..\TypeGenerator\Output\GeneratedTypes.cs" Link="GeneratedTypes.cs" />
-    </ItemGroup>
 </Project>
