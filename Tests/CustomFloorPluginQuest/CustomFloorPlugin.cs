@@ -160,6 +160,8 @@ public static class QuestCustomFloorMod
             return null;
         }
 
+        EnablePlatformBehaviours(activePlatform);
+
         return component;
     }
 
@@ -168,8 +170,72 @@ public static class QuestCustomFloorMod
         if (platform == null)
             return;
 
+        DisablePlatformBehaviours(platform);
         UnityEngine.Object.Destroy(platform);
         platform = null;
+    }
+
+    private static void EnablePlatformBehaviours(GameObject platform)
+    {
+        EnableTrackRings(platform);
+        EnableSpectrograms(platform);
+        EnablePrefabLightmaps(platform);
+    }
+
+    private static void DisablePlatformBehaviours(GameObject platform)
+    {
+        DisableTrackRings(platform);
+        DisableSpectrograms(platform);
+    }
+
+    private static void EnableTrackRings(GameObject platform)
+    {
+        var rings = platform.GetComponentsInChildren<TrackRings>(true);
+        if (rings == null)
+            return;
+
+        for (var i = 0; i < rings.Length; i++)
+            ((TrackRings)rings[i]).PlatformEnabled();
+    }
+
+    private static void DisableTrackRings(GameObject platform)
+    {
+        var rings = platform.GetComponentsInChildren<TrackRings>(true);
+        if (rings == null)
+            return;
+
+        for (var i = 0; i < rings.Length; i++)
+            ((TrackRings)rings[i]).PlatformDisabled();
+    }
+
+    private static void EnableSpectrograms(GameObject platform)
+    {
+        var spectrograms = platform.GetComponentsInChildren<Spectrogram>(true);
+        if (spectrograms == null)
+            return;
+
+        for (var i = 0; i < spectrograms.Length; i++)
+            ((Spectrogram)spectrograms[i]).PlatformEnabled();
+    }
+
+    private static void DisableSpectrograms(GameObject platform)
+    {
+        var spectrograms = platform.GetComponentsInChildren<Spectrogram>(true);
+        if (spectrograms == null)
+            return;
+
+        for (var i = 0; i < spectrograms.Length; i++)
+            ((Spectrogram)spectrograms[i]).PlatformDisabled();
+    }
+
+    private static void EnablePrefabLightmaps(GameObject platform)
+    {
+        var lightmaps = platform.GetComponentsInChildren<PrefabLightmapData>(true);
+        if (lightmaps == null)
+            return;
+
+        for (var i = 0; i < lightmaps.Length; i++)
+            ((PrefabLightmapData)lightmaps[i]).PlatformEnabled();
     }
 
     private static string ResolveConfiguredPath(string configuredPath)

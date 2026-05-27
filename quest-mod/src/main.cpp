@@ -10,6 +10,7 @@
 #include "GlobalNamespace/MultiplayerLevelScenesTransitionSetupDataSO.hpp"
 #include "GlobalNamespace/PlayerSpecificSettings.hpp"
 #include "GlobalNamespace/StandardLevelScenesTransitionSetupDataSO.hpp"
+#include "GlobalNamespace/TrackLaneRing.hpp"
 #include "GlobalNamespace/TrackLaneRingsManager.hpp"
 #include "GlobalNamespace/TransformExtensions.hpp"
 #include "System/IO/File.hpp"
@@ -70,6 +71,7 @@ DECLARE_CLASS_CODEGEN_DLL(CustomFloorPlugin, CustomPlatform, UnityEngine::MonoBe
     DECLARE_INSTANCE_FIELD(::StringW, platHash);
     DECLARE_INSTANCE_FIELD(::StringW, fullPath);
     DECLARE_INSTANCE_FIELD(bool, isDescriptor);
+    DECLARE_INSTANCE_METHOD(void, Awake);
 };
 
 DEFINE_TYPE(CustomFloorPlugin, CustomPlatform);
@@ -88,6 +90,8 @@ DECLARE_CLASS_CODEGEN_DLL(CustomFloorPlugin, CameraVisibility, UnityEngine::Mono
     DECLARE_DEFAULT_CTOR();
     DECLARE_INSTANCE_FIELD(int32_t, visibilityMode);
     DECLARE_INSTANCE_FIELD(bool, affectChildren);
+    DECLARE_INSTANCE_METHOD(void, Awake);
+    DECLARE_INSTANCE_METHOD(void, SetLayer, UnityEngine::GameObject* target, int32_t layer);
 };
 
 DEFINE_TYPE(CustomFloorPlugin, CameraVisibility);
@@ -111,6 +115,9 @@ DECLARE_CLASS_CODEGEN_DLL(CustomFloorPlugin, TrackRings, UnityEngine::MonoBehavi
     DECLARE_INSTANCE_FIELD(float, minPositionStep);
     DECLARE_INSTANCE_FIELD(float, maxPositionStep);
     DECLARE_INSTANCE_FIELD(float, moveSpeed);
+    DECLARE_INSTANCE_FIELD(GlobalNamespace::TrackLaneRingsManager*, _manager);
+    DECLARE_INSTANCE_METHOD(void, PlatformEnabled);
+    DECLARE_INSTANCE_METHOD(void, PlatformDisabled);
 };
 
 DEFINE_TYPE(CustomFloorPlugin, TrackRings);
@@ -260,6 +267,9 @@ DECLARE_CLASS_CODEGEN_DLL(CustomFloorPlugin, Spectrogram, UnityEngine::MonoBehav
     DECLARE_INSTANCE_FIELD(float, maxHeight);
     DECLARE_INSTANCE_FIELD(float, columnWidth);
     DECLARE_INSTANCE_FIELD(float, columnDepth);
+    DECLARE_INSTANCE_METHOD(void, PlatformEnabled);
+    DECLARE_INSTANCE_METHOD(void, PlatformDisabled);
+    DECLARE_INSTANCE_METHOD(void, UpdateColumnHeights);
 };
 
 DEFINE_TYPE(CustomFloorPlugin, Spectrogram);
@@ -292,9 +302,135 @@ DECLARE_CLASS_CODEGEN_DLL(CustomFloorPlugin, PrefabLightmapData, UnityEngine::Mo
     DECLARE_INSTANCE_FIELD(ArrayW<UnityEngine::Light*>, lightInfoLight);
     DECLARE_INSTANCE_FIELD(ArrayW<int32_t>, lightInfoLightmapBakeType);
     DECLARE_INSTANCE_FIELD(ArrayW<int32_t>, lightInfoMixedLightingMode);
+    DECLARE_INSTANCE_METHOD(void, PlatformEnabled);
 };
 
-DEFINE_TYPE(CustomFloorPlugin, PrefabLightmapData);
+DEFINE_TYPE(CustomFloorPlugin, PrefabLightmapData);
+
+void CustomFloorPlugin::CustomPlatform::Awake() {
+    UnityEngine::Transform* transform{};
+
+    transform = this->GetComponent<UnityEngine::Transform*>();
+    if ((transform != nullptr) && (((transform->get_gameObject() != nullptr)))) {
+        transform->get_gameObject()->SetActive(0);
+    }
+}
+
+void CustomFloorPlugin::CameraVisibility::Awake() {
+    UnityEngine::Transform* transform{};
+
+    transform = this->GetComponent<UnityEngine::Transform*>();
+    if ((transform == nullptr) || (((transform->get_gameObject() == nullptr)))) {
+        return;
+    }
+    if (this->visibilityMode == 1) {
+        this->SetLayer(transform->get_gameObject(), 4);
+    }
+    else {
+        if (this->visibilityMode == 2) {
+            this->SetLayer(transform->get_gameObject(), 3);
+        }
+    }
+}
+
+void CustomFloorPlugin::CameraVisibility::SetLayer(UnityEngine::GameObject* target, int32_t layer) {
+    UnityEngine::Transform* targetTransform{};
+    UnityEngine::Transform* transform{};
+    int32_t i{};
+
+    UnityEngine::Transform* child{};
+
+    targetTransform = target->GetComponent<UnityEngine::Transform*>();
+    if (targetTransform == nullptr) {
+        return;
+    }
+    transform = target->GetComponent<UnityEngine::Transform*>();
+    if ((transform == nullptr) || ((!(this->affectChildren)))) {
+        return;
+    }
+    i = 0;
+    while (true) {
+        if (!(((i < transform->GetChildCount())))) {
+            break;
+        }
+        child = transform->GetChild(i);
+        if ((child != nullptr) && (((child->get_gameObject() != nullptr)))) {
+            SetLayer(child->get_gameObject(), layer);
+        }
+        i = (i + 1);
+    }
+}
+
+void CustomFloorPlugin::TrackRings::PlatformEnabled() {
+    GlobalNamespace::TrackLaneRing* prefabRing{};
+    UnityEngine::Transform* transform{};
+
+    if ((this->trackLaneRingPrefab == nullptr) || ((this->_manager != nullptr))) {
+        return;
+    }
+    prefabRing = this->trackLaneRingPrefab->GetComponent<GlobalNamespace::TrackLaneRing*>();
+    if (prefabRing == nullptr) {
+        prefabRing = this->trackLaneRingPrefab->AddComponent<GlobalNamespace::TrackLaneRing*>();
+    }
+    transform = this->GetComponent<UnityEngine::Transform*>();
+    if ((transform == nullptr) || (((transform->get_gameObject() == nullptr)))) {
+        return;
+    }
+    this->_manager = transform->get_gameObject()->AddComponent<GlobalNamespace::TrackLaneRingsManager*>();
+    this->_manager->____trackLaneRingPrefab = prefabRing;
+    this->_manager->____ringCount = this->ringCount;
+    this->_manager->____ringPositionStep = this->ringPositionStep;
+    this->_manager->____spawnAsChildren = 1;
+}
+
+void CustomFloorPlugin::TrackRings::PlatformDisabled() {
+}
+
+void CustomFloorPlugin::Spectrogram::PlatformEnabled() {
+    this->UpdateColumnHeights();
+}
+
+void CustomFloorPlugin::Spectrogram::PlatformDisabled() {
+    this->UpdateColumnHeights();
+}
+
+void CustomFloorPlugin::Spectrogram::UpdateColumnHeights() {
+    UnityEngine::Transform* transform{};
+    int32_t i{};
+
+    UnityEngine::Transform* child{};
+
+    transform = this->GetComponent<UnityEngine::Transform*>();
+    if (transform == nullptr) {
+        return;
+    }
+    i = 0;
+    while (true) {
+        if (!(((i < transform->GetChildCount())))) {
+            break;
+        }
+        child = transform->GetChild(i);
+        i = (i + 1);
+    }
+}
+
+void CustomFloorPlugin::PrefabLightmapData::PlatformEnabled() {
+    int32_t i{};
+
+    UnityEngine::Renderer* renderer{};
+
+    if ((!(this->renderInfoRenderer)) || (!(this->renderInfoLightmapIndex)) || ((!(this->renderInfoLightmapOffsetScale)))) {
+        return;
+    }
+    i = 0;
+    while (true) {
+        if (!(((i < static_cast<int32_t>(static_cast<int>(this->renderInfoRenderer.size())))))) {
+            break;
+        }
+        renderer = this->renderInfoRenderer[i];
+        i = (i + 1);
+    }
+}
 
 Configuration &getConfig() {
     static Configuration config(modInfo);
@@ -403,6 +539,13 @@ static ::StringW CustomFloorPlugin_QuestCustomFloorMod_ChooseGameplayPlatformPat
 static UnityEngine::Transform* CustomFloorPlugin_QuestCustomFloorMod_GetGameplayEnvironmentRoot();
 static CustomFloorPlugin::CustomPlatform* CustomFloorPlugin_QuestCustomFloorMod_SpawnPlatform_System_String_UnityEngine_Transform_UnityEngine_GameObject_(::StringW configuredPath, UnityEngine::Transform* parent, UnityEngine::GameObject*& activePlatform);
 static void CustomFloorPlugin_QuestCustomFloorMod_DestroyPlatform_UnityEngine_GameObject_(UnityEngine::GameObject*& platform);
+static void CustomFloorPlugin_QuestCustomFloorMod_EnablePlatformBehaviours_UnityEngine_GameObject(UnityEngine::GameObject* platform);
+static void CustomFloorPlugin_QuestCustomFloorMod_DisablePlatformBehaviours_UnityEngine_GameObject(UnityEngine::GameObject* platform);
+static void CustomFloorPlugin_QuestCustomFloorMod_EnableTrackRings_UnityEngine_GameObject(UnityEngine::GameObject* platform);
+static void CustomFloorPlugin_QuestCustomFloorMod_DisableTrackRings_UnityEngine_GameObject(UnityEngine::GameObject* platform);
+static void CustomFloorPlugin_QuestCustomFloorMod_EnableSpectrograms_UnityEngine_GameObject(UnityEngine::GameObject* platform);
+static void CustomFloorPlugin_QuestCustomFloorMod_DisableSpectrograms_UnityEngine_GameObject(UnityEngine::GameObject* platform);
+static void CustomFloorPlugin_QuestCustomFloorMod_EnablePrefabLightmaps_UnityEngine_GameObject(UnityEngine::GameObject* platform);
 static ::StringW CustomFloorPlugin_QuestCustomFloorMod_ResolveConfiguredPath_System_String(::StringW configuredPath);
 static void CustomFloorPlugin_QuestCustomFloorMod_ApplyMenuVisibility_GlobalNamespace_MenuEnvironmentManager_System_Boolean_System_Boolean(GlobalNamespace::MenuEnvironmentManager* manager, bool hasCustomPlatform, bool hideDefaultPlatform);
 static void CustomFloorPlugin_QuestCustomFloorMod_ApplyGameplayVisibility_UnityEngine_Transform_CustomFloorPlugin_CustomPlatform_System_Boolean(UnityEngine::Transform* root, CustomFloorPlugin::CustomPlatform* platform, bool hasCustomPlatform);
@@ -507,6 +650,7 @@ static CustomFloorPlugin::CustomPlatform* CustomFloorPlugin_QuestCustomFloorMod_
     if (component == nullptr) {
         return nullptr;
     }
+    CustomFloorPlugin_QuestCustomFloorMod_EnablePlatformBehaviours_UnityEngine_GameObject(activePlatform);
 
     return component;
 }
@@ -516,8 +660,110 @@ static void CustomFloorPlugin_QuestCustomFloorMod_DestroyPlatform_UnityEngine_Ga
     if (platform == nullptr) {
         return;
     }
+    CustomFloorPlugin_QuestCustomFloorMod_DisablePlatformBehaviours_UnityEngine_GameObject(platform);
     UnityEngine::Object::Destroy(platform);
     platform = nullptr;
+}
+
+static void CustomFloorPlugin_QuestCustomFloorMod_EnablePlatformBehaviours_UnityEngine_GameObject(UnityEngine::GameObject* platform) {
+    CustomFloorPlugin_QuestCustomFloorMod_EnableTrackRings_UnityEngine_GameObject(platform);
+    CustomFloorPlugin_QuestCustomFloorMod_EnableSpectrograms_UnityEngine_GameObject(platform);
+    CustomFloorPlugin_QuestCustomFloorMod_EnablePrefabLightmaps_UnityEngine_GameObject(platform);
+}
+
+static void CustomFloorPlugin_QuestCustomFloorMod_DisablePlatformBehaviours_UnityEngine_GameObject(UnityEngine::GameObject* platform) {
+    CustomFloorPlugin_QuestCustomFloorMod_DisableTrackRings_UnityEngine_GameObject(platform);
+    CustomFloorPlugin_QuestCustomFloorMod_DisableSpectrograms_UnityEngine_GameObject(platform);
+}
+
+static void CustomFloorPlugin_QuestCustomFloorMod_EnableTrackRings_UnityEngine_GameObject(UnityEngine::GameObject* platform) {
+
+    int32_t i{};
+
+    auto rings = platform->GetComponentsInChildren<CustomFloorPlugin::TrackRings*>(1);
+    if (!(rings)) {
+        return;
+    }
+    i = 0;
+    while (true) {
+        if (!(((i < static_cast<int32_t>(static_cast<int>(rings.size())))))) {
+            break;
+        }
+        reinterpret_cast<CustomFloorPlugin::TrackRings*>(rings[i])->PlatformEnabled();
+        i = (i + 1);
+    }
+}
+
+static void CustomFloorPlugin_QuestCustomFloorMod_DisableTrackRings_UnityEngine_GameObject(UnityEngine::GameObject* platform) {
+
+    int32_t i{};
+
+    auto rings = platform->GetComponentsInChildren<CustomFloorPlugin::TrackRings*>(1);
+    if (!(rings)) {
+        return;
+    }
+    i = 0;
+    while (true) {
+        if (!(((i < static_cast<int32_t>(static_cast<int>(rings.size())))))) {
+            break;
+        }
+        reinterpret_cast<CustomFloorPlugin::TrackRings*>(rings[i])->PlatformDisabled();
+        i = (i + 1);
+    }
+}
+
+static void CustomFloorPlugin_QuestCustomFloorMod_EnableSpectrograms_UnityEngine_GameObject(UnityEngine::GameObject* platform) {
+
+    int32_t i{};
+
+    auto spectrograms = platform->GetComponentsInChildren<CustomFloorPlugin::Spectrogram*>(1);
+    if (!(spectrograms)) {
+        return;
+    }
+    i = 0;
+    while (true) {
+        if (!(((i < static_cast<int32_t>(static_cast<int>(spectrograms.size())))))) {
+            break;
+        }
+        reinterpret_cast<CustomFloorPlugin::Spectrogram*>(spectrograms[i])->PlatformEnabled();
+        i = (i + 1);
+    }
+}
+
+static void CustomFloorPlugin_QuestCustomFloorMod_DisableSpectrograms_UnityEngine_GameObject(UnityEngine::GameObject* platform) {
+
+    int32_t i{};
+
+    auto spectrograms = platform->GetComponentsInChildren<CustomFloorPlugin::Spectrogram*>(1);
+    if (!(spectrograms)) {
+        return;
+    }
+    i = 0;
+    while (true) {
+        if (!(((i < static_cast<int32_t>(static_cast<int>(spectrograms.size())))))) {
+            break;
+        }
+        reinterpret_cast<CustomFloorPlugin::Spectrogram*>(spectrograms[i])->PlatformDisabled();
+        i = (i + 1);
+    }
+}
+
+static void CustomFloorPlugin_QuestCustomFloorMod_EnablePrefabLightmaps_UnityEngine_GameObject(UnityEngine::GameObject* platform) {
+
+    int32_t i{};
+
+    auto lightmaps = platform->GetComponentsInChildren<CustomFloorPlugin::PrefabLightmapData*>(1);
+    if (!(lightmaps)) {
+        return;
+    }
+    i = 0;
+    while (true) {
+        if (!(((i < static_cast<int32_t>(static_cast<int>(lightmaps.size())))))) {
+            break;
+        }
+        reinterpret_cast<CustomFloorPlugin::PrefabLightmapData*>(lightmaps[i])->PlatformEnabled();
+        i = (i + 1);
+    }
 }
 
 static ::StringW CustomFloorPlugin_QuestCustomFloorMod_ResolveConfiguredPath_System_String(::StringW configuredPath) {

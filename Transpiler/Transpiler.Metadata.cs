@@ -63,9 +63,6 @@ internal sealed partial class Transpiler
             if (field.IsStatic || field.IsLiteral || field.Name.StartsWith("<", StringComparison.Ordinal))
                 continue;
 
-            if (!field.IsPublic && !field.CustomAttributes.Any(attribute => attribute.AttributeType.Name == "SerializeField"))
-                continue;
-
             fields.Add(
                 new CustomTypeFieldEntry
                 {
@@ -506,6 +503,31 @@ internal sealed partial class Transpiler
 
             var translator = BuildStructuredTranslator(syntheticHook, localMethodNames);
             result.Add(new HelperMethodEmission(method, functionName, translator));
+        }
+
+        return result;
+    }
+
+    private List<CustomTypeMethodEmission> BuildCustomTypeMethodEmissions()
+    {
+        var result = new List<CustomTypeMethodEmission>();
+        foreach (var customType in _customTypes)
+        {
+            foreach (var method in customType.Methods)
+            {
+                var syntheticHook = new HookDefinition
+                {
+                    HookName = method.CppName,
+                    TargetMethod = method.Method.Name,
+                    TargetType = method.Method.DeclaringType,
+                    Method = method.Method,
+                    IsConstructor = false,
+                    Phase = HookPhase.Full,
+                };
+
+                var translator = BuildStructuredTranslator(syntheticHook, new Dictionary<string, string>(StringComparer.Ordinal));
+                result.Add(new CustomTypeMethodEmission(customType, method, translator));
+            }
         }
 
         return result;

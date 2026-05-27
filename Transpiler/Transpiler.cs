@@ -15,6 +15,8 @@ internal sealed partial class Transpiler
 
     private sealed record HelperMethodEmission(MethodDefinition Method, string FunctionName, IlMethodTranslator Body);
 
+    private sealed record CustomTypeMethodEmission(CustomTypeEntry CustomType, CustomTypeMethodEntry Method, IlMethodTranslator Body);
+
     private sealed record MenuButtonRegistration(MethodDefinition Method, string Text, string HoverHint);
 
     private sealed record GameplaySetupTabRegistration(MethodDefinition Method, string Name, int MenuTypeValue);
@@ -355,6 +357,7 @@ internal sealed partial class Transpiler
     {
         var localMethodNames = _helperMethods.ToDictionary(method => method.FullName, GetHelperFunctionName, StringComparer.Ordinal);
         var helperMethodEmissions = BuildHelperMethodEmissions(localMethodNames);
+        var customTypeMethodEmissions = BuildCustomTypeMethodEmissions();
         var bodyGenerators = _hooks.ToDictionary(hook => hook, hook => BuildStructuredTranslator(hook, localMethodNames));
 
         var includeSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -384,6 +387,16 @@ internal sealed partial class Transpiler
             AddInclude(includeSet, _typeSystem.GetIncludePath(customType.Type.BaseType));
             foreach (var field in customType.Type.Fields)
                 AddInclude(includeSet, _typeSystem.GetIncludePath(field.FieldType));
+
+            foreach (var method in customType.Methods)
+            {
+                AddInclude(includeSet, _typeSystem.GetIncludePath(method.Method.ReturnType));
+                foreach (var parameter in method.Method.Parameters)
+                    AddInclude(includeSet, _typeSystem.GetIncludePath(parameter.ParameterType));
+
+                foreach (var include in CollectBodyIncludes(method.Method))
+                    AddInclude(includeSet, include);
+            }
         }
 
         foreach (var generator in bodyGenerators.Values)
@@ -395,6 +408,12 @@ internal sealed partial class Transpiler
         foreach (var helperMethod in helperMethodEmissions)
         {
             foreach (var include in helperMethod.Body.RequiredIncludes)
+                includeSet.Add(include);
+        }
+
+        foreach (var method in customTypeMethodEmissions)
+        {
+            foreach (var include in method.Body.RequiredIncludes)
                 includeSet.Add(include);
         }
 
@@ -435,7 +454,7 @@ internal sealed partial class Transpiler
 
         if (_customTypes.Count > 0)
         {
-            WriteCustomTypes(writer);
+            WriteCustomTypes(writer, customTypeMethodEmissions);
             writer.WriteLine();
         }
 
@@ -547,7 +566,7 @@ internal sealed partial class Transpiler
         return type.FullName == "System.String" && !string.IsNullOrWhiteSpace(defaultValue) && defaultValue.Contains("newcsstr", StringComparison.Ordinal);
     }
 
-    private void WriteCustomTypes(CppCodeWriter writer)
+    private void WriteCustomTypes(CppCodeWriter writer, IReadOnlyList<CustomTypeMethodEmission> methodEmissions)
     {
         foreach (var customType in _customTypes)
         {
@@ -556,6 +575,8 @@ internal sealed partial class Transpiler
             writer.WriteLine(fieldDefaults.Count == 0 ? "    DECLARE_DEFAULT_CTOR();" : "    DECLARE_CTOR(__ctor);");
             foreach (var field in customType.Fields)
                 writer.WriteLine($"    DECLARE_INSTANCE_FIELD({field.CppType}, {field.Name});");
+            foreach (var method in customType.Methods)
+                writer.WriteLine($"    DECLARE_INSTANCE_METHOD({_typeSystem.MapType(method.Method.ReturnType)}, {method.CppName}{BuildCustomTypeMethodDeclarationSuffix(method.Method)});");
             writer.WriteLine("};");
             writer.WriteLine();
             writer.WriteLine($"DEFINE_TYPE({customType.CppNamespace}, {customType.CppName});");
@@ -573,6 +594,32 @@ internal sealed partial class Transpiler
             writer.WriteLine("}");
             writer.WriteLine();
         }
+
+        foreach (var emission in methodEmissions)
+            WriteCustomTypeMethod(writer, emission);
+    }
+
+    private string BuildCustomTypeMethodDeclarationSuffix(MethodDefinition method)
+    {
+        if (method.Parameters.Count == 0)
+            return "";
+
+        var parameters = method.Parameters.Select(parameter => $"{_typeSystem.MapType(parameter.ParameterType)} {CppIdentifier.Sanitize(parameter.Name, $"arg{parameter.Index}")}");
+        return $", {string.Join(", ", parameters)}";
+    }
+
+    private void WriteCustomTypeMethod(CppCodeWriter writer, CustomTypeMethodEmission emission)
+    {
+        var method = emission.Method.Method;
+        var returnType = _typeSystem.MapType(method.ReturnType);
+        var qualifiedType = $"{emission.CustomType.CppNamespace}::{emission.CustomType.CppName}";
+        var parameters = method.Parameters.Select(parameter => $"{_typeSystem.MapType(parameter.ParameterType)} {CppIdentifier.Sanitize(parameter.Name, $"arg{parameter.Index}")}").ToList();
+
+        writer.WriteLine($"{returnType} {qualifiedType}::{emission.Method.CppName}({string.Join(", ", parameters)}) {{");
+        foreach (var line in emission.Body.Statements)
+            writer.WriteLine($"    {line}");
+        writer.WriteLine("}");
+        writer.WriteLine();
     }
 
     private static string MapBsmlMenuType(int value)
