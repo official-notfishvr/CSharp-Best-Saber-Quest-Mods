@@ -49,6 +49,11 @@ internal sealed partial class IlMethodTranslator
         return _parameterNames.TryGetValue(index, out var name) ? name : $"arg{index}";
     }
 
+    private int GetIlArgumentIndex(ParameterDefinition parameter)
+    {
+        return _method.HasThis ? parameter.Index + 1 : parameter.Index;
+    }
+
     private static string BuildConfigAccessorKey(string declaringTypeFullName, string memberName)
     {
         return $"{declaringTypeFullName}::{memberName}";

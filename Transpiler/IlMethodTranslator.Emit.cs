@@ -29,11 +29,11 @@ internal sealed partial class IlMethodTranslator
                 return;
             case Code.Ldarg:
             case Code.Ldarg_S:
-                PushArgument(((ParameterDefinition)instruction.Operand).Index);
+                PushArgument(GetIlArgumentIndex((ParameterDefinition)instruction.Operand));
                 return;
             case Code.Ldarga:
             case Code.Ldarga_S:
-                PushArgumentAddress(((ParameterDefinition)instruction.Operand).Index);
+                PushArgumentAddress(GetIlArgumentIndex((ParameterDefinition)instruction.Operand));
                 return;
             case Code.Ldloc_0:
             case Code.Ldloc_1:
@@ -61,7 +61,7 @@ internal sealed partial class IlMethodTranslator
                 return;
             case Code.Starg:
             case Code.Starg_S:
-                StoreArgument(((ParameterDefinition)instruction.Operand).Index, indentLevel);
+                StoreArgument(GetIlArgumentIndex((ParameterDefinition)instruction.Operand), indentLevel);
                 return;
             case Code.Ldc_I4_M1:
                 _stack.Push(new CppExpression { Code = "-1", Type = _method.Module.TypeSystem.Int32 });
@@ -386,19 +386,38 @@ internal sealed partial class IlMethodTranslator
 
     private void PushArgument(int parameterIndex)
     {
-        var parameter = _method.Parameters[parameterIndex];
+        if (_method.HasThis && parameterIndex == 0)
+        {
+            _stack.Push(new CppExpression { Code = "this", Type = _method.DeclaringType });
+            return;
+        }
+
+        var parameter = _method.Parameters[_method.HasThis ? parameterIndex - 1 : parameterIndex];
         RequiredInclude(parameter.ParameterType);
-        _stack.Push(new CppExpression { Code = GetArgumentName(parameterIndex), Type = parameter.ParameterType });
+        _stack.Push(new CppExpression { Code = GetArgumentName(_method.HasThis ? parameterIndex - 1 : parameterIndex), Type = parameter.ParameterType });
     }
 
     private void PushArgumentAddress(int parameterIndex)
     {
-        var parameter = _method.Parameters[parameterIndex];
+        if (_method.HasThis && parameterIndex == 0)
+        {
+            _stack.Push(
+                new CppExpression
+                {
+                    Code = "this",
+                    Type = new ByReferenceType(_method.DeclaringType),
+                    PreferAutoDeclaration = true,
+                }
+            );
+            return;
+        }
+
+        var parameter = _method.Parameters[_method.HasThis ? parameterIndex - 1 : parameterIndex];
         RequiredInclude(parameter.ParameterType);
         _stack.Push(
             new CppExpression
             {
-                Code = GetArgumentName(parameterIndex),
+                Code = GetArgumentName(_method.HasThis ? parameterIndex - 1 : parameterIndex),
                 Type = new ByReferenceType(parameter.ParameterType),
                 PreferAutoDeclaration = true,
             }
@@ -446,8 +465,11 @@ internal sealed partial class IlMethodTranslator
 
     private void StoreArgument(int index, int indentLevel)
     {
+        if (_method.HasThis && index == 0)
+            throw new NotSupportedException($"Cannot assign to this in {_method.FullName}");
+
         var value = Pop();
-        var name = GetArgumentName(index);
+        var name = GetArgumentName(_method.HasThis ? index - 1 : index);
         AppendLine(indentLevel, $"{name} = {value.Code};");
     }
 

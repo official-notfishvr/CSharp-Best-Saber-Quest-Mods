@@ -45,6 +45,7 @@ internal sealed class CustomTypeEntry
     public required string BaseCppType { get; init; }
     public required string DllName { get; init; }
     public required List<CustomTypeFieldEntry> Fields { get; init; }
+    public required List<CustomTypeMethodEntry> Methods { get; init; }
 }
 
 internal sealed class CustomTypeFieldEntry
@@ -52,6 +53,12 @@ internal sealed class CustomTypeFieldEntry
     public required string Name { get; init; }
     public required string CppType { get; init; }
     public string? DefaultValueCpp { get; init; }
+}
+
+internal sealed class CustomTypeMethodEntry
+{
+    public required MethodDefinition Method { get; init; }
+    public required string CppName { get; init; }
 }
 
 internal enum HookPhase

@@ -10,20 +10,30 @@
 #include "GlobalNamespace/MultiplayerLevelScenesTransitionSetupDataSO.hpp"
 #include "GlobalNamespace/PlayerSpecificSettings.hpp"
 #include "GlobalNamespace/StandardLevelScenesTransitionSetupDataSO.hpp"
+#include "GlobalNamespace/TrackLaneRingsManager.hpp"
 #include "GlobalNamespace/TransformExtensions.hpp"
 #include "System/IO/File.hpp"
 #include "System/IO/Path.hpp"
 #include "System/RuntimeTypeHandle.hpp"
 #include "System/String.hpp"
 #include "System/Type.hpp"
+#include "TMPro/TextMeshPro.hpp"
+#include "UnityEngine/AnimationClip.hpp"
 #include "UnityEngine/AssetBundle.hpp"
+#include "UnityEngine/Color.hpp"
 #include "UnityEngine/Component.hpp"
+#include "UnityEngine/Events/UnityEvent.hpp"
 #include "UnityEngine/GameObject.hpp"
+#include "UnityEngine/Light.hpp"
 #include "UnityEngine/MonoBehaviour.hpp"
 #include "UnityEngine/Object.hpp"
+#include "UnityEngine/Renderer.hpp"
 #include "UnityEngine/Resources.hpp"
 #include "UnityEngine/Sprite.hpp"
+#include "UnityEngine/Texture2D.hpp"
 #include "UnityEngine/Transform.hpp"
+#include "UnityEngine/Vector3.hpp"
+#include "UnityEngine/Vector4.hpp"
 
 static modloader::ModInfo modInfo{"com.csharp.quest.customplatforms", "0.1.0", 0};
 
@@ -72,7 +82,219 @@ void CustomFloorPlugin::CustomPlatform::__ctor() {
     platHash = il2cpp_utils::newcsstr("");
     fullPath = il2cpp_utils::newcsstr("");
     isDescriptor = true;
-}
+}
+
+DECLARE_CLASS_CODEGEN_DLL(CustomFloorPlugin, CameraVisibility, UnityEngine::MonoBehaviour, "CustomFloorPlugin") {
+    DECLARE_DEFAULT_CTOR();
+    DECLARE_INSTANCE_FIELD(int32_t, visibilityMode);
+    DECLARE_INSTANCE_FIELD(bool, affectChildren);
+};
+
+DEFINE_TYPE(CustomFloorPlugin, CameraVisibility);
+
+DECLARE_CLASS_CODEGEN_DLL(CustomFloorPlugin, TrackRings, UnityEngine::MonoBehaviour, "CustomFloorPlugin") {
+    DECLARE_CTOR(__ctor);
+    DECLARE_INSTANCE_FIELD(UnityEngine::GameObject*, trackLaneRingPrefab);
+    DECLARE_INSTANCE_FIELD(int32_t, ringCount);
+    DECLARE_INSTANCE_FIELD(float, ringPositionStep);
+    DECLARE_INSTANCE_FIELD(bool, useRotationEffect);
+    DECLARE_INSTANCE_FIELD(int32_t, rotationSongEventType);
+    DECLARE_INSTANCE_FIELD(float, rotationStep);
+    DECLARE_INSTANCE_FIELD(int32_t, rotationPropagationSpeed);
+    DECLARE_INSTANCE_FIELD(float, rotationFlexySpeed);
+    DECLARE_INSTANCE_FIELD(float, startupRotationAngle);
+    DECLARE_INSTANCE_FIELD(float, startupRotationStep);
+    DECLARE_INSTANCE_FIELD(int32_t, startupRotationPropagationSpeed);
+    DECLARE_INSTANCE_FIELD(float, startupRotationFlexySpeed);
+    DECLARE_INSTANCE_FIELD(bool, useStepEffect);
+    DECLARE_INSTANCE_FIELD(int32_t, stepSongEventType);
+    DECLARE_INSTANCE_FIELD(float, minPositionStep);
+    DECLARE_INSTANCE_FIELD(float, maxPositionStep);
+    DECLARE_INSTANCE_FIELD(float, moveSpeed);
+};
+
+DEFINE_TYPE(CustomFloorPlugin, TrackRings);
+
+void CustomFloorPlugin::TrackRings::__ctor() {
+    INVOKE_CTOR();
+    INVOKE_BASE_CTOR(CustomFloorPlugin::TrackRings::___TypeRegistration::get()->baseType());
+    ringCount = 10;
+    rotationSongEventType = 9;
+    rotationPropagationSpeed = 1;
+    startupRotationPropagationSpeed = 10;
+    stepSongEventType = 10;
+}
+
+DECLARE_CLASS_CODEGEN_DLL(CustomFloorPlugin, TrackMirror, UnityEngine::MonoBehaviour, "CustomFloorPlugin") {
+    DECLARE_DEFAULT_CTOR();
+};
+
+DEFINE_TYPE(CustomFloorPlugin, TrackMirror);
+
+DECLARE_CLASS_CODEGEN_DLL(CustomFloorPlugin, ColorMaterial, UnityEngine::MonoBehaviour, "CustomFloorPlugin") {
+    DECLARE_CTOR(__ctor);
+    DECLARE_INSTANCE_FIELD(::StringW, propertyName);
+    DECLARE_INSTANCE_FIELD(int32_t, materialColorType);
+};
+
+DEFINE_TYPE(CustomFloorPlugin, ColorMaterial);
+
+void CustomFloorPlugin::ColorMaterial::__ctor() {
+    INVOKE_CTOR();
+    INVOKE_BASE_CTOR(CustomFloorPlugin::ColorMaterial::___TypeRegistration::get()->baseType());
+    propertyName = il2cpp_utils::newcsstr("_Color");
+}
+
+DECLARE_CLASS_CODEGEN_DLL(CustomFloorPlugin, TubeLight, UnityEngine::MonoBehaviour, "CustomFloorPlugin") {
+    DECLARE_DEFAULT_CTOR();
+    DECLARE_INSTANCE_FIELD(float, width);
+    DECLARE_INSTANCE_FIELD(float, length);
+    DECLARE_INSTANCE_FIELD(float, center);
+    DECLARE_INSTANCE_FIELD(UnityEngine::Color, color);
+    DECLARE_INSTANCE_FIELD(float, colorAlphaMultiplier);
+    DECLARE_INSTANCE_FIELD(float, bloomFogIntensityMultiplier);
+    DECLARE_INSTANCE_FIELD(float, boostToWhite);
+    DECLARE_INSTANCE_FIELD(int32_t, lightsID);
+};
+
+DEFINE_TYPE(CustomFloorPlugin, TubeLight);
+
+DECLARE_CLASS_CODEGEN_DLL(CustomFloorPlugin, SongEventHandler, UnityEngine::MonoBehaviour, "CustomFloorPlugin") {
+    DECLARE_DEFAULT_CTOR();
+    DECLARE_INSTANCE_FIELD(int32_t, eventType);
+    DECLARE_INSTANCE_FIELD(int32_t, value);
+    DECLARE_INSTANCE_FIELD(bool, anyValue);
+    DECLARE_INSTANCE_FIELD(UnityEngine::Events::UnityEvent*, OnTrigger);
+};
+
+DEFINE_TYPE(CustomFloorPlugin, SongEventHandler);
+
+DECLARE_CLASS_CODEGEN_DLL(CustomFloorPlugin, ComboReachedEvent, UnityEngine::MonoBehaviour, "CustomFloorPlugin") {
+    DECLARE_CTOR(__ctor);
+    DECLARE_INSTANCE_FIELD(int32_t, ComboTarget);
+    DECLARE_INSTANCE_FIELD(UnityEngine::Events::UnityEvent*, NthComboReached);
+};
+
+DEFINE_TYPE(CustomFloorPlugin, ComboReachedEvent);
+
+void CustomFloorPlugin::ComboReachedEvent::__ctor() {
+    INVOKE_CTOR();
+    INVOKE_BASE_CTOR(CustomFloorPlugin::ComboReachedEvent::___TypeRegistration::get()->baseType());
+    ComboTarget = 50;
+}
+
+DECLARE_CLASS_CODEGEN_DLL(CustomFloorPlugin, EveryNthComboFilter, UnityEngine::MonoBehaviour, "CustomFloorPlugin") {
+    DECLARE_CTOR(__ctor);
+    DECLARE_INSTANCE_FIELD(int32_t, ComboStep);
+    DECLARE_INSTANCE_FIELD(UnityEngine::Events::UnityEvent*, NthComboReached);
+};
+
+DEFINE_TYPE(CustomFloorPlugin, EveryNthComboFilter);
+
+void CustomFloorPlugin::EveryNthComboFilter::__ctor() {
+    INVOKE_CTOR();
+    INVOKE_BASE_CTOR(CustomFloorPlugin::EveryNthComboFilter::___TypeRegistration::get()->baseType());
+    ComboStep = 50;
+}
+
+DECLARE_CLASS_CODEGEN_DLL(CustomFloorPlugin, SaberSliceFilter, UnityEngine::MonoBehaviour, "CustomFloorPlugin") {
+    DECLARE_DEFAULT_CTOR();
+    DECLARE_INSTANCE_FIELD(int32_t, saberType);
+    DECLARE_INSTANCE_FIELD(UnityEngine::Events::UnityEvent*, SaberSlice);
+};
+
+DEFINE_TYPE(CustomFloorPlugin, SaberSliceFilter);
+
+DECLARE_CLASS_CODEGEN_DLL(CustomFloorPlugin, TextEventFilter, UnityEngine::MonoBehaviour, "CustomFloorPlugin") {
+    DECLARE_DEFAULT_CTOR();
+    DECLARE_INSTANCE_FIELD(int32_t, counterType);
+    DECLARE_INSTANCE_FIELD(TMPro::TextMeshPro*, textMeshPro);
+};
+
+DEFINE_TYPE(CustomFloorPlugin, TextEventFilter);
+
+DECLARE_CLASS_CODEGEN_DLL(CustomFloorPlugin, EventManager, UnityEngine::MonoBehaviour, "CustomFloorPlugin") {
+    DECLARE_DEFAULT_CTOR();
+    DECLARE_INSTANCE_FIELD(UnityEngine::Events::UnityEvent*, OnSlice);
+    DECLARE_INSTANCE_FIELD(UnityEngine::Events::UnityEvent*, OnMiss);
+    DECLARE_INSTANCE_FIELD(UnityEngine::Events::UnityEvent*, OnComboBreak);
+    DECLARE_INSTANCE_FIELD(UnityEngine::Events::UnityEvent*, MultiplierUp);
+    DECLARE_INSTANCE_FIELD(UnityEngine::Events::UnityEvent*, SaberStartColliding);
+    DECLARE_INSTANCE_FIELD(UnityEngine::Events::UnityEvent*, SaberStopColliding);
+    DECLARE_INSTANCE_FIELD(UnityEngine::Events::UnityEvent*, OnLevelStart);
+    DECLARE_INSTANCE_FIELD(UnityEngine::Events::UnityEvent*, OnLevelFail);
+    DECLARE_INSTANCE_FIELD(UnityEngine::Events::UnityEvent*, OnLevelFinish);
+    DECLARE_INSTANCE_FIELD(UnityEngine::Events::UnityEvent*, OnBlueLightOn);
+    DECLARE_INSTANCE_FIELD(UnityEngine::Events::UnityEvent*, OnRedLightOn);
+};
+
+DEFINE_TYPE(CustomFloorPlugin, EventManager);
+
+DECLARE_CLASS_CODEGEN_DLL(CustomFloorPlugin, RotationEventEffect, UnityEngine::MonoBehaviour, "CustomFloorPlugin") {
+    DECLARE_DEFAULT_CTOR();
+    DECLARE_INSTANCE_FIELD(int32_t, eventType);
+    DECLARE_INSTANCE_FIELD(UnityEngine::Vector3, rotationVector);
+};
+
+DEFINE_TYPE(CustomFloorPlugin, RotationEventEffect);
+
+DECLARE_CLASS_CODEGEN_DLL(CustomFloorPlugin, PairRotationEventEffect, UnityEngine::MonoBehaviour, "CustomFloorPlugin") {
+    DECLARE_DEFAULT_CTOR();
+    DECLARE_INSTANCE_FIELD(int32_t, eventL);
+    DECLARE_INSTANCE_FIELD(int32_t, eventR);
+    DECLARE_INSTANCE_FIELD(int32_t, switchOverrideRandomValuesEvent);
+    DECLARE_INSTANCE_FIELD(UnityEngine::Transform*, transformL);
+    DECLARE_INSTANCE_FIELD(UnityEngine::Transform*, transformR);
+    DECLARE_INSTANCE_FIELD(UnityEngine::Vector3, rotationVector);
+    DECLARE_INSTANCE_FIELD(bool, useZPositionForAngleOffset);
+    DECLARE_INSTANCE_FIELD(float, zPositionAngleOffsetScale);
+};
+
+DEFINE_TYPE(CustomFloorPlugin, PairRotationEventEffect);
+
+DECLARE_CLASS_CODEGEN_DLL(CustomFloorPlugin, Spectrogram, UnityEngine::MonoBehaviour, "CustomFloorPlugin") {
+    DECLARE_DEFAULT_CTOR();
+    DECLARE_INSTANCE_FIELD(UnityEngine::GameObject*, columnPrefab);
+    DECLARE_INSTANCE_FIELD(UnityEngine::Vector3, separator);
+    DECLARE_INSTANCE_FIELD(float, minHeight);
+    DECLARE_INSTANCE_FIELD(float, maxHeight);
+    DECLARE_INSTANCE_FIELD(float, columnWidth);
+    DECLARE_INSTANCE_FIELD(float, columnDepth);
+};
+
+DEFINE_TYPE(CustomFloorPlugin, Spectrogram);
+
+DECLARE_CLASS_CODEGEN_DLL(CustomFloorPlugin, SpectrogramAnimationState, UnityEngine::MonoBehaviour, "CustomFloorPlugin") {
+    DECLARE_DEFAULT_CTOR();
+    DECLARE_INSTANCE_FIELD(UnityEngine::AnimationClip*, animationClip);
+    DECLARE_INSTANCE_FIELD(int32_t, sample);
+    DECLARE_INSTANCE_FIELD(bool, averageAllSamples);
+};
+
+DEFINE_TYPE(CustomFloorPlugin, SpectrogramAnimationState);
+
+DECLARE_CLASS_CODEGEN_DLL(CustomFloorPlugin, SpectrogramMaterial, UnityEngine::MonoBehaviour, "CustomFloorPlugin") {
+    DECLARE_DEFAULT_CTOR();
+    DECLARE_INSTANCE_FIELD(::StringW, PropertyName);
+    DECLARE_INSTANCE_FIELD(::StringW, AveragePropertyName);
+};
+
+DEFINE_TYPE(CustomFloorPlugin, SpectrogramMaterial);
+
+DECLARE_CLASS_CODEGEN_DLL(CustomFloorPlugin, PrefabLightmapData, UnityEngine::MonoBehaviour, "CustomFloorPlugin") {
+    DECLARE_DEFAULT_CTOR();
+    DECLARE_INSTANCE_FIELD(ArrayW<UnityEngine::Renderer*>, renderInfoRenderer);
+    DECLARE_INSTANCE_FIELD(ArrayW<int32_t>, renderInfoLightmapIndex);
+    DECLARE_INSTANCE_FIELD(ArrayW<UnityEngine::Vector4>, renderInfoLightmapOffsetScale);
+    DECLARE_INSTANCE_FIELD(ArrayW<UnityEngine::Texture2D*>, lightmaps);
+    DECLARE_INSTANCE_FIELD(ArrayW<UnityEngine::Texture2D*>, lightmapsDir);
+    DECLARE_INSTANCE_FIELD(ArrayW<UnityEngine::Texture2D*>, shadowMasks);
+    DECLARE_INSTANCE_FIELD(ArrayW<UnityEngine::Light*>, lightInfoLight);
+    DECLARE_INSTANCE_FIELD(ArrayW<int32_t>, lightInfoLightmapBakeType);
+    DECLARE_INSTANCE_FIELD(ArrayW<int32_t>, lightInfoMixedLightingMode);
+};
+
+DEFINE_TYPE(CustomFloorPlugin, PrefabLightmapData);
 
 Configuration &getConfig() {
     static Configuration config(modInfo);
@@ -459,6 +681,7 @@ MAKE_HOOK_MATCH(
 
 static void OnStandardLevelInit(GlobalNamespace::StandardLevelScenesTransitionSetupDataSO* self, GlobalNamespace::PlayerSpecificSettings* playerSpecificSettings, ::StringW backButtonText, bool startPaused) {
     CustomFloorPlugin_QuestCustomFloorMod__isMultiplayerScenePending = 0;
+    CustomFloorPlugin_QuestCustomFloorMod_DestroyPlatform_UnityEngine_GameObject_(CustomFloorPlugin_QuestCustomFloorMod__activeMenuPlatform);
 }
 
 MAKE_HOOK_MATCH(
@@ -473,6 +696,7 @@ MAKE_HOOK_MATCH(
 
 static void OnMultiplayerLevelInit(GlobalNamespace::MultiplayerLevelScenesTransitionSetupDataSO* self) {
     CustomFloorPlugin_QuestCustomFloorMod__isMultiplayerScenePending = 1;
+    CustomFloorPlugin_QuestCustomFloorMod_DestroyPlatform_UnityEngine_GameObject_(CustomFloorPlugin_QuestCustomFloorMod__activeMenuPlatform);
 }
 
 MAKE_HOOK_MATCH(

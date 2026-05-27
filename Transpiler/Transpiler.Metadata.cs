@@ -76,6 +76,21 @@ internal sealed partial class Transpiler
             );
         }
 
+        var methods = new List<CustomTypeMethodEntry>();
+        foreach (var method in type.Methods)
+        {
+            if (method.IsStatic || !method.HasBody || method.IsConstructor || method.IsGetter || method.IsSetter)
+                continue;
+
+            methods.Add(
+                new CustomTypeMethodEntry
+                {
+                    Method = method,
+                    CppName = CppIdentifier.Sanitize(method.Name),
+                }
+            );
+        }
+
         _customTypes.Add(
             new CustomTypeEntry
             {
@@ -85,6 +100,7 @@ internal sealed partial class Transpiler
                 BaseCppType = _typeSystem.MapType(type.BaseType).TrimEnd('*'),
                 DllName = _module?.Assembly.Name.Name ?? type.Module.Assembly.Name.Name,
                 Fields = fields,
+                Methods = methods,
             }
         );
     }
