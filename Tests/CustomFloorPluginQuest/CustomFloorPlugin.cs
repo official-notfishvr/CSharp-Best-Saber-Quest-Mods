@@ -140,10 +140,7 @@ public static class QuestCustomFloorMod
 
         var asset = bundle.LoadAsset("_CustomPlatform", typeof(GameObject));
         if (asset == null)
-        {
-            bundle.Unload(true);
-            return null;
-        }
+            return UnloadBundleAndReturnNull(bundle, true);
 
         var prefab = (GameObject)asset;
         activePlatform = (GameObject)UnityEngine.Object.Instantiate(prefab, parent);
@@ -156,13 +153,22 @@ public static class QuestCustomFloorMod
         var component = activePlatform.GetComponent<CustomPlatform>();
         if (component == null)
         {
-            DestroyPlatform(ref activePlatform);
+            var failedPlatform = activePlatform;
+            activePlatform = null;
+            if (failedPlatform != null)
+                UnityEngine.Object.Destroy(failedPlatform);
             return null;
         }
 
         EnablePlatformBehaviours(activePlatform);
 
         return component;
+    }
+
+    private static CustomPlatform? UnloadBundleAndReturnNull(AssetBundle bundle, bool unloadAllLoadedObjects)
+    {
+        bundle.Unload(unloadAllLoadedObjects);
+        return null;
     }
 
     private static void DestroyPlatform(ref GameObject? platform)

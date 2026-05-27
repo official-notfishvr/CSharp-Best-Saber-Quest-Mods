@@ -538,6 +538,7 @@ static void CustomFloorPlugin_QuestCustomFloorMod_ApplyGameplayPlatform();
 static ::StringW CustomFloorPlugin_QuestCustomFloorMod_ChooseGameplayPlatformPath();
 static UnityEngine::Transform* CustomFloorPlugin_QuestCustomFloorMod_GetGameplayEnvironmentRoot();
 static CustomFloorPlugin::CustomPlatform* CustomFloorPlugin_QuestCustomFloorMod_SpawnPlatform_System_String_UnityEngine_Transform_UnityEngine_GameObject_(::StringW configuredPath, UnityEngine::Transform* parent, UnityEngine::GameObject*& activePlatform);
+static CustomFloorPlugin::CustomPlatform* CustomFloorPlugin_QuestCustomFloorMod_UnloadBundleAndReturnNull_UnityEngine_AssetBundle_System_Boolean(UnityEngine::AssetBundle* bundle, bool unloadAllLoadedObjects);
 static void CustomFloorPlugin_QuestCustomFloorMod_DestroyPlatform_UnityEngine_GameObject_(UnityEngine::GameObject*& platform);
 static void CustomFloorPlugin_QuestCustomFloorMod_EnablePlatformBehaviours_UnityEngine_GameObject(UnityEngine::GameObject* platform);
 static void CustomFloorPlugin_QuestCustomFloorMod_DisablePlatformBehaviours_UnityEngine_GameObject(UnityEngine::GameObject* platform);
@@ -621,8 +622,12 @@ static CustomFloorPlugin::CustomPlatform* CustomFloorPlugin_QuestCustomFloorMod_
     UnityEngine::AssetBundle* bundle{};
     UnityEngine::Object* asset{};
     UnityEngine::GameObject* prefab{};
-    CustomFloorPlugin::CustomPlatform* component{};
+    CustomFloorPlugin::CustomPlatform* component{};
+
+    CustomFloorPlugin::CustomPlatform* local6{};
 
+    UnityEngine::GameObject* failedPlatform{};
+
     CustomFloorPlugin_QuestCustomFloorMod_DestroyPlatform_UnityEngine_GameObject_(activePlatform);
     fullPath = CustomFloorPlugin_QuestCustomFloorMod_ResolveConfiguredPath_System_String(configuredPath);
     if (::il2cpp_utils::RunMethodRethrow<bool, false>(::il2cpp_utils::GetClassFromName("System", "String"), "IsNullOrEmpty", fullPath)) {
@@ -637,7 +642,8 @@ static CustomFloorPlugin::CustomPlatform* CustomFloorPlugin_QuestCustomFloorMod_
     }
     asset = bundle->LoadAsset<UnityEngine::GameObject*>(il2cpp_utils::newcsstr("_CustomPlatform"));
     if (asset == nullptr) {
-        return nullptr;
+        local6 = CustomFloorPlugin_QuestCustomFloorMod_UnloadBundleAndReturnNull_UnityEngine_AssetBundle_System_Boolean(bundle, 1);
+        return local6;
     }
     prefab = reinterpret_cast<UnityEngine::GameObject*>(asset);
     activePlatform = UnityEngine::Object::Instantiate<UnityEngine::GameObject*>(prefab, parent);
@@ -648,11 +654,24 @@ static CustomFloorPlugin::CustomPlatform* CustomFloorPlugin_QuestCustomFloorMod_
     activePlatform->SetActive(1);
     component = activePlatform->GetComponent<CustomFloorPlugin::CustomPlatform*>();
     if (component == nullptr) {
+        failedPlatform = activePlatform;
+        activePlatform = nullptr;
+        if (failedPlatform != nullptr) {
+            UnityEngine::Object::Destroy(failedPlatform);
+        }
+        local6 = nullptr;
         return nullptr;
     }
     CustomFloorPlugin_QuestCustomFloorMod_EnablePlatformBehaviours_UnityEngine_GameObject(activePlatform);
-
+    local6 = component;
     return component;
+}
+
+static CustomFloorPlugin::CustomPlatform* CustomFloorPlugin_QuestCustomFloorMod_UnloadBundleAndReturnNull_UnityEngine_AssetBundle_System_Boolean(UnityEngine::AssetBundle* bundle, bool unloadAllLoadedObjects) {
+
+    bundle->Unload(unloadAllLoadedObjects);
+
+    return nullptr;
 }
 
 static void CustomFloorPlugin_QuestCustomFloorMod_DestroyPlatform_UnityEngine_GameObject_(UnityEngine::GameObject*& platform) {
