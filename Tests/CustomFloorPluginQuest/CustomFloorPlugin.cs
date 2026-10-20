@@ -330,8 +330,8 @@ public static class QuestCustomFloorMod
     private static void SetPathActive(Transform root, string path, bool active)
     {
         var child = root.Find(path);
-        if (child != null && child.get_gameObject() != null)
-            child.get_gameObject().SetActive(active);
+        if (child != null && child.gameObject != null)
+            child.gameObject.SetActive(active);
     }
 
     private static void SetNamedObjectsActive(Transform root, string[] names, bool active)
@@ -339,8 +339,8 @@ public static class QuestCustomFloorMod
         for (var i = 0; i < names.Length; i++)
         {
             var child = TransformExtensions.FindChildRecursively(root, names[i]);
-            if (child != null && child.get_gameObject() != null)
-                child.get_gameObject().SetActive(active);
+            if (child != null && child.gameObject != null)
+                child.gameObject.SetActive(active);
         }
     }
 
@@ -414,8 +414,8 @@ public class CustomPlatform : MonoBehaviour
     public void Awake()
     {
         var transform = GetComponent<Transform>();
-        if (transform != null && transform.get_gameObject() != null)
-            transform.get_gameObject().SetActive(false);
+        if (transform != null && transform.gameObject != null)
+            transform.gameObject.SetActive(false);
     }
 }
 
@@ -428,13 +428,13 @@ public class CameraVisibility : MonoBehaviour
     public void Awake()
     {
         var transform = GetComponent<Transform>();
-        if (transform == null || transform.get_gameObject() == null)
+        if (transform == null || transform.gameObject == null)
             return;
 
         if (visibilityMode == 1)
-            SetLayer(transform.get_gameObject(), 4);
+            SetLayer(transform.gameObject, 4);
         else if (visibilityMode == 2)
-            SetLayer(transform.get_gameObject(), 3);
+            SetLayer(transform.gameObject, 3);
     }
 
     private void SetLayer(GameObject target, int layer)
@@ -451,8 +451,8 @@ public class CameraVisibility : MonoBehaviour
         while (i < transform.GetChildCount())
         {
             var child = transform.GetChild(i);
-            if (child != null && child.get_gameObject() != null)
-                SetLayer(child.get_gameObject(), layer);
+            if (child != null && child.gameObject != null)
+                SetLayer(child.gameObject, layer);
             i = i + 1;
         }
     }
@@ -490,10 +490,10 @@ public class TrackRings : MonoBehaviour
             prefabRing = trackLaneRingPrefab.AddComponent<TrackLaneRing>();
 
         var transform = GetComponent<Transform>();
-        if (transform == null || transform.get_gameObject() == null)
+        if (transform == null || transform.gameObject == null)
             return;
 
-        _manager = transform.get_gameObject().AddComponent<TrackLaneRingsManager>();
+        _manager = transform.gameObject.AddComponent<TrackLaneRingsManager>();
         _manager._trackLaneRingPrefab = prefabRing;
         _manager._ringCount = ringCount;
         _manager._ringPositionStep = ringPositionStep;

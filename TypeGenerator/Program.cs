@@ -400,7 +400,7 @@ class TypeStubGenerator
             if (!line.StartsWith("/// @brief Field"))
                 continue;
 
-            var mInfo = Regex.Match(line, @"Field\s+(\w+),\s+offset\s+(0x[0-9a-fA-F]+)");
+            var mInfo = Regex.Match(line, @"Field\s+(\w+),\s+offset:?\s+(0x[0-9a-fA-F]+)");
             if (!mInfo.Success)
                 continue;
             var fName = mInfo.Groups[1].Value;
@@ -497,9 +497,9 @@ class TypeStubGenerator
                 continue;
             if (methodName == "Main")
                 continue;
-            var isAccessor = methodName.StartsWith("get_") || methodName.StartsWith("set_") || methodName.StartsWith("add_") || methodName.StartsWith("remove_");
-            var keepAccessor = methodName == "get_gameObject" || methodName == "get_GameObject" || methodName == "set_text" || methodName == "get_transform";
-            if (isAccessor && !keepAccessor)
+            // Keep property accessors so the stub emitter can expose them as C# properties.
+            // Event accessors are implementation details and are not useful to mod source.
+            if (methodName.StartsWith("add_", StringComparison.Ordinal) || methodName.StartsWith("remove_", StringComparison.Ordinal))
                 continue;
             if (methodName.StartsWith("getStaticF_") || methodName.StartsWith("setStaticF_"))
                 continue;
@@ -719,13 +719,11 @@ class TypeStubGenerator
         }
 
         var seenSigs = new HashSet<string>();
-        string lowerGameObjectReturnType = null;
-        bool lowerGameObjectStatic = false;
-        bool hasUpperGameObject = false;
         string lowerSetTextParamType = null;
         bool lowerSetTextStatic = false;
         bool hasUpperSetText = false;
         string gameObjectTransformPropertyType = null;
+        var accessorProperties = new Dictionary<string, (string Type, bool HasGetter, bool HasSetter, bool IsStatic)>(StringComparer.Ordinal);
         foreach (var method in data.Methods)
         {
             var mName = Sanitize(method.Name);
@@ -745,16 +743,28 @@ class TypeStubGenerator
             var genericSuffix = genericParams.Count == 0 ? "" : "<" + string.Join(", ", genericParams.Select(Sanitize)) + ">";
             var staticMod = method.IsStatic ? "static " : "";
             var body = (mName == ".ctor" || csReturn == "void") ? "{ }" : (csReturn.StartsWith("ref ", StringComparison.Ordinal) ? "=> throw null;" : "=> default;");
-            if (methodNameActual == "get_gameObject" && method.Parameters.Count == 0)
+            if (
+                methodNameActual != "set_Text"
+                && !methodNameActual.EndsWith("_Injected", StringComparison.Ordinal)
+                && !(methodNameActual.StartsWith("get_", StringComparison.Ordinal) && csReturn.StartsWith("ref ", StringComparison.Ordinal))
+                && ((methodNameActual.StartsWith("get_", StringComparison.Ordinal) && method.Parameters.Count == 0) || (methodNameActual.StartsWith("set_", StringComparison.Ordinal) && method.Parameters.Count == 1))
+            )
             {
-                lowerGameObjectReturnType = csReturn;
-                lowerGameObjectStatic = method.IsStatic;
+                var isGetter = methodNameActual.StartsWith("get_", StringComparison.Ordinal);
+                var propertyName = methodNameActual.Substring(4);
+                if (!accessorProperties.TryGetValue(propertyName, out var accessors))
+                    accessors = (isGetter ? csReturn : paramTypes[0], false, false, method.IsStatic);
+                accessorProperties[propertyName] = (accessors.Type, accessors.HasGetter || isGetter, accessors.HasSetter || !isGetter, accessors.IsStatic);
+                if (methodNameActual == "get_transform")
+                    gameObjectTransformPropertyType = csReturn;
+                if (methodNameActual == "set_text")
+                {
+                    lowerSetTextParamType = paramTypes[0];
+                    lowerSetTextStatic = method.IsStatic;
+                }
+                continue;
             }
-            else if (methodNameActual == "get_GameObject" && method.Parameters.Count == 0)
-            {
-                hasUpperGameObject = true;
-            }
-            else if (methodNameActual == "set_text" && method.Parameters.Count == 1)
+            if (methodNameActual == "set_text" && method.Parameters.Count == 1)
             {
                 lowerSetTextParamType = paramTypes[0];
                 lowerSetTextStatic = method.IsStatic;
@@ -764,12 +774,6 @@ class TypeStubGenerator
             {
                 hasUpperSetText = true;
             }
-            else if (methodNameActual == "get_transform" && method.Parameters.Count == 0 && csReturn != "void")
-            {
-                gameObjectTransformPropertyType = csReturn;
-                continue;
-            }
-
             if (isInterface)
             {
                 if (method.IsStatic)
@@ -779,20 +783,6 @@ class TypeStubGenerator
             else
             {
                 writer.WriteLine($"{currentIndent}    public {staticMod}{returnType}{methodNameActual}{genericSuffix}({args}) {body}");
-            }
-        }
-        if (lowerGameObjectReturnType != null && !hasUpperGameObject)
-        {
-            var staticMod = lowerGameObjectStatic ? "static " : "";
-            if (isInterface)
-            {
-                if (!lowerGameObjectStatic)
-                    writer.WriteLine($"{currentIndent}    {lowerGameObjectReturnType} get_GameObject();");
-            }
-            else
-            {
-                var callTarget = lowerGameObjectStatic ? "get_gameObject()" : "this.get_gameObject()";
-                writer.WriteLine($"{currentIndent}    public {staticMod}{lowerGameObjectReturnType} get_GameObject() => {callTarget};");
             }
         }
         if (lowerSetTextParamType != null && !hasUpperSetText)
@@ -810,7 +800,21 @@ class TypeStubGenerator
         }
 
         if (safeTypeName == "GameObject" && ns == "UnityEngine" && gameObjectTransformPropertyType != null)
-            writer.WriteLine($"{currentIndent}    public {gameObjectTransformPropertyType} transform {{ get => default!; }}");
+            accessorProperties["transform"] = (gameObjectTransformPropertyType, true, false, false);
+
+        foreach (var property in accessorProperties.OrderBy(entry => entry.Key, StringComparer.Ordinal))
+        {
+            var (propertyType, hasGetter, hasSetter, isStatic) = property.Value;
+            if (string.IsNullOrWhiteSpace(propertyType) || propertyType == "void")
+                continue;
+            var staticMod = isStatic ? "static " : "";
+            var accessors = new List<string>();
+            if (hasGetter)
+                accessors.Add(isInterface ? "get;" : "get => default!;");
+            if (hasSetter)
+                accessors.Add(isInterface ? "set;" : "set { }");
+            writer.WriteLine($"{currentIndent}    public {staticMod}{propertyType} {EscapeKeyword(Sanitize(property.Key))} {{ {string.Join(" ", accessors)} }}");
+        }
 
         GenerateNestedStubs(writer, ns, typeName, currentIndent, nestedNameConflicts);
 
@@ -971,8 +975,15 @@ class TypeStubGenerator
             || cppType.Contains("X509Certificate2Impl", StringComparison.Ordinal)
             || cppType.Contains("LocalCertSelectionCallback", StringComparison.Ordinal)
             || cppType.Contains("ServerCertValidationCallback", StringComparison.Ordinal)
+            || cppType.Contains("ServerCertSelectionCallback", StringComparison.Ordinal)
             || cppType.Contains("WebConnectionTunnel", StringComparison.Ordinal)
             || cppType.Contains("Dictionary_2_Enumerator", StringComparison.Ordinal)
+            || cppType.Contains("List_1_Enumerator", StringComparison.Ordinal)
+            || cppType.Contains("Queue_1_Enumerator", StringComparison.Ordinal)
+            || cppType == "CommandT"
+            || cppType == "ResultT"
+            || cppType.EndsWith(".CommandT", StringComparison.Ordinal)
+            || cppType.EndsWith(".ResultT", StringComparison.Ordinal)
             || cppType.Contains("UnityEngine.UIElements.Internal.", StringComparison.Ordinal)
             || cppType.Contains("UnityEngine.UIElements.ActionType", StringComparison.Ordinal)
         )
@@ -1335,6 +1346,17 @@ class TypeStubGenerator
         var res = new List<(string name, int arity)>();
         if (string.IsNullOrEmpty(typeName))
             return res;
+
+        // C++ binding names encode nested C# types with a double underscore.
+        // Keep the second underscore as the nested type's leading underscore:
+        // IVRApplications__LaunchApplication => IVRApplications._LaunchApplication.
+        var nestedSeparator = typeName.IndexOf("__", StringComparison.Ordinal);
+        if (nestedSeparator > 0 && nestedSeparator + 2 < typeName.Length)
+        {
+            res.AddRange(SplitNesting(typeName.Substring(0, nestedSeparator)));
+            res.AddRange(SplitNesting("_" + typeName.Substring(nestedSeparator + 2)));
+            return res;
+        }
 
         var rawParts = typeName.Split('_');
         var parts = new List<string>();

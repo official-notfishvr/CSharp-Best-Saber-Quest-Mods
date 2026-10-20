@@ -10,7 +10,7 @@ a POC for making beat saber quest mods in C#
 - `CoreMod/Config`: config declaration
 - `CoreMod/CustomTypes`: custom IL2CPP type declaration
 - `CoreMod/BSML`: BSML component types, menu registration attributes, and the BSML Lite facade
-- `CoreMod/BSML/Lite`: BSML Lite helper methods grouped by UI feature, plus Unity object wrappers
+- `CoreMod/BSML/Lite`: BSML Lite helper methods grouped by UI feature
 - `TypeGenerator`: generated game type declarations and metadata
 - `Transpiler`: the top-level assembly and generation workflow
 - `Transpiler/Discovery`: assembly, config, patch, custom type, BSML, and helper discovery

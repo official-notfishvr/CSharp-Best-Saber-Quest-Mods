@@ -7,5 +7,6 @@
     </PropertyGroup>
     <ItemGroup>
         <Folder Include="output\" />
+        <Compile Remove="Output\**\*.cs" />
     </ItemGroup>
 </Project>

@@ -33,8 +33,6 @@ internal sealed class CppTypeSystem
     private static readonly Dictionary<string, string?> IncludeOverrides = new(StringComparer.Ordinal)
     {
         ["CoreMod.BSMLLite"] = null,
-        ["BSML.Lite.GameObjectWrapper"] = "bsml/shared/BSML-Lite/GameObjectWrapper.hpp",
-        ["BSML.Lite.TransformWrapper"] = "bsml/shared/BSML-Lite/TransformWrapper.hpp",
         ["BSML.ClickableImage"] = "bsml/shared/BSML/Components/ClickableImage.hpp",
         ["BSML.ClickableText"] = "bsml/shared/BSML/Components/ClickableText.hpp",
         ["BSML.ColorSetting"] = "bsml/shared/BSML/Components/Settings/ColorSetting.hpp",

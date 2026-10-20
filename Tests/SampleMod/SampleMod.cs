@@ -46,13 +46,13 @@ public static class TestMod
                     detailView._buttonsWrapper.SetActive(true);
 
                 if (detailView._actionButtonText != null)
-                    detailView._actionButtonText.set_Text(ButtonText + PrefixSuffix);
+                    detailView._actionButtonText.text = (ButtonText + PrefixSuffix);
 
                 if (detailView._beatmapLevelVersionText != null)
-                    detailView._beatmapLevelVersionText.set_Text(VersionStatusText);
+                    detailView._beatmapLevelVersionText.text = VersionStatusText;
 
                 if (detailView._actionButton != null)
-                    detailView._actionButton.m_Interactable = true;
+                    detailView._actionButton.interactable = true;
             }
         }
 
@@ -70,9 +70,9 @@ public static class TestMod
             return;
 
         if (detailView._actionButtonText != null)
-            detailView._actionButtonText.set_Text(ButtonText + PostfixSuffix);
+            detailView._actionButtonText.text = (ButtonText + PostfixSuffix);
 
         if (detailView._practiceButton != null)
-            detailView._practiceButton.m_Interactable = true;
+            detailView._practiceButton.interactable = true;
     }
 }
