@@ -21,19 +21,19 @@ public static class PauseKeyMod
 
     private static bool _pressedLastFrame;
 
-    [Config(Description = "Enable PauseKey on Quest", DefaultValue = true)]
+    [Config(Description = "Enable PauseKey on Quest")]
     public static bool Enabled { get; set; } = true;
 
-    [Config(Description = "0 default menu, 1/2 trigger, 3/4 grip, 5/6 primary, 7/8 secondary, 9/10 stick", DefaultValue = DefaultBinding)]
+    [Config(Description = "0 default menu, 1/2 trigger, 3/4 grip, 5/6 primary, 7/8 secondary, 9/10 stick")]
     public static int PauseBinding { get; set; } = DefaultBinding;
 
-    [Config(Description = "Trigger press threshold when using a trigger binding", DefaultValue = 0.75f)]
+    [Config(Description = "Trigger press threshold when using a trigger binding")]
     public static float TriggerThreshold { get; set; } = 0.75f;
 
-    [Config(Description = "Thumbstick magnitude threshold when using a stick binding", DefaultValue = 0.85f)]
+    [Config(Description = "Thumbstick magnitude threshold when using a stick binding")]
     public static float ThumbstickThreshold { get; set; } = 0.85f;
 
-    [Hook(typeof(UnityXRHelper), nameof(UnityXRHelper.GetMenuButton))]
+    [Patch(typeof(UnityXRHelper), nameof(UnityXRHelper.GetMenuButton), PatchKind.Replace)]
     public static bool OnGetMenuButton(UnityXRHelper self)
     {
         if (!Enabled)
@@ -45,7 +45,7 @@ public static class PauseKeyMod
         return GetBindingState(self, PauseBinding);
     }
 
-    [Hook(typeof(UnityXRHelper), nameof(UnityXRHelper.GetMenuButtonDown))]
+    [Patch(typeof(UnityXRHelper), nameof(UnityXRHelper.GetMenuButtonDown), PatchKind.Replace)]
     public static bool OnGetMenuButtonDown(UnityXRHelper self)
     {
         if (!Enabled)
@@ -64,7 +64,7 @@ public static class PauseKeyMod
         return pressedThisFrame;
     }
 
-    [Hook(typeof(UnityXRHelper), nameof(UnityXRHelper.OnApplicationPause), Phase = HookPhase.Postfix)]
+    [Patch(typeof(UnityXRHelper), nameof(UnityXRHelper.OnApplicationPause), PatchKind.After)]
     public static void OnApplicationPausePostfix(UnityXRHelper self, bool pauseStatus)
     {
         if (!pauseStatus)

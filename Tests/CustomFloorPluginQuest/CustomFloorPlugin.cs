@@ -26,39 +26,39 @@ public static class QuestCustomFloorMod
     [Config(Description = "Platform bundle to load in multiplayer gameplay scenes. Falls back to GameplayPlatformPath when empty.")]
     public static string MultiplayerPlatformPath { get; set; } = "";
 
-    [Hook(typeof(MenuEnvironmentManager), nameof(MenuEnvironmentManager.Start), Phase = HookPhase.Postfix)]
+    [Patch(typeof(MenuEnvironmentManager), nameof(MenuEnvironmentManager.Start), PatchKind.After)]
     public static void OnMenuEnvironmentStart(MenuEnvironmentManager self)
     {
         ApplyMenuPlatform(self);
     }
 
-    [Hook(typeof(MenuEnvironmentManager), nameof(MenuEnvironmentManager.ShowEnvironmentType), Phase = HookPhase.Postfix)]
+    [Patch(typeof(MenuEnvironmentManager), nameof(MenuEnvironmentManager.ShowEnvironmentType), PatchKind.After)]
     public static void OnMenuEnvironmentChanged(MenuEnvironmentManager self, MenuEnvironmentManager.MenuEnvironmentType menuEnvironmentType)
     {
         ApplyMenuPlatform(self);
     }
 
-    [Hook(typeof(GameCoreSceneSetup), nameof(GameCoreSceneSetup.Start), Phase = HookPhase.Postfix)]
+    [Patch(typeof(GameCoreSceneSetup), nameof(GameCoreSceneSetup.Start), PatchKind.After)]
     public static void OnGameCoreSceneSetupStart(GameCoreSceneSetup self)
     {
         ApplyGameplayPlatform();
     }
 
-    [Hook(typeof(StandardLevelScenesTransitionSetupDataSO), nameof(StandardLevelScenesTransitionSetupDataSO.InitAndSetupScenes), Phase = HookPhase.Postfix)]
+    [Patch(typeof(StandardLevelScenesTransitionSetupDataSO), nameof(StandardLevelScenesTransitionSetupDataSO.InitAndSetupScenes), PatchKind.After)]
     public static void OnStandardLevelInit(StandardLevelScenesTransitionSetupDataSO self, PlayerSpecificSettings playerSpecificSettings, string backButtonText, bool startPaused)
     {
         _isMultiplayerScenePending = false;
         DestroyPlatform(ref _activeMenuPlatform);
     }
 
-    [Hook(typeof(MultiplayerLevelScenesTransitionSetupDataSO), nameof(MultiplayerLevelScenesTransitionSetupDataSO.InitAndSetupScenes), Phase = HookPhase.Postfix)]
+    [Patch(typeof(MultiplayerLevelScenesTransitionSetupDataSO), nameof(MultiplayerLevelScenesTransitionSetupDataSO.InitAndSetupScenes), PatchKind.After)]
     public static void OnMultiplayerLevelInit(MultiplayerLevelScenesTransitionSetupDataSO self)
     {
         _isMultiplayerScenePending = true;
         DestroyPlatform(ref _activeMenuPlatform);
     }
 
-    [Hook(typeof(MenuTransitionsHelper), nameof(MenuTransitionsHelper.StopStandardLevel), Phase = HookPhase.Postfix)]
+    [Patch(typeof(MenuTransitionsHelper), nameof(MenuTransitionsHelper.StopStandardLevel), PatchKind.After)]
     public static void OnStopStandardLevel(MenuTransitionsHelper self)
     {
         _isMultiplayerScenePending = false;
@@ -344,100 +344,23 @@ public static class QuestCustomFloorMod
         }
     }
 
-    private static readonly string[] SmallRingNames =
-    [
-        "SmallTrackLaneRings",
-        "SmallTrackLaneRingsGroup",
-        "TriangleTrackLaneRings",
-        "PanelsTrackLaneRings",
-        "Panels4TrackLaneRings",
-        "LightLinesTrackLaneRings",
-        "PairLaserTrackLaneRings",
-        "PanelsLightsTrackLaneRings",
-        "TrackLaneRings1",
-    ];
+    private static readonly string[] SmallRingNames = ["SmallTrackLaneRings", "SmallTrackLaneRingsGroup", "TriangleTrackLaneRings", "PanelsTrackLaneRings", "Panels4TrackLaneRings", "LightLinesTrackLaneRings", "PairLaserTrackLaneRings", "PanelsLightsTrackLaneRings", "TrackLaneRings1"];
 
-    private static readonly string[] BigRingNames =
-    [
-        "BigTrackLaneRings",
-        "BigTrackLaneRingsGroup",
-        "BigLightsTrackLaneRings",
-        "BigCenterLightsTrackLaneRings",
-        "DistantRings",
-        "TrackLaneRings2",
-    ];
+    private static readonly string[] BigRingNames = ["BigTrackLaneRings", "BigTrackLaneRingsGroup", "BigLightsTrackLaneRings", "BigCenterLightsTrackLaneRings", "DistantRings", "TrackLaneRings2"];
 
-    private static readonly string[] VisualizerNames =
-    [
-        "Spectrograms",
-        "SpectrogramsTheSecond",
-    ];
+    private static readonly string[] VisualizerNames = ["Spectrograms", "SpectrogramsTheSecond"];
 
-    private static readonly string[] TowerNames =
-    [
-        "Buildings",
-        "NearBuildingLeft",
-        "NearBuildingRight",
-        "FarBuildings",
-        "HallConstruction",
-        "TopCones",
-        "BottomCones",
-    ];
+    private static readonly string[] TowerNames = ["Buildings", "NearBuildingLeft", "NearBuildingRight", "FarBuildings", "HallConstruction", "TopCones", "BottomCones"];
 
-    private static readonly string[] HighwayNames =
-    [
-        "TrackMirror",
-        "TrackConstruction",
-        "Construction",
-        "Floor",
-        "FloorConstruction",
-        "VConstruction",
-        "Underground",
-        "Cube",
-        "TrackBL",
-        "TrackBR",
-        "TrackTR",
-        "TrackTL",
-    ];
+    private static readonly string[] HighwayNames = ["TrackMirror", "TrackConstruction", "Construction", "Floor", "FloorConstruction", "VConstruction", "Underground", "Cube", "TrackBL", "TrackBR", "TrackTR", "TrackTL"];
 
-    private static readonly string[] BackColumnNames =
-    [
-        "PillarPair",
-        "SmallPillarPair",
-        "RearPillar",
-        "PillarTrackLaneRingsR",
-    ];
+    private static readonly string[] BackColumnNames = ["PillarPair", "SmallPillarPair", "RearPillar", "PillarTrackLaneRingsR"];
 
-    private static readonly string[] BackLaserNames =
-    [
-        "FrontLights",
-        "FrontLasers",
-        "Logo",
-        "LogoLight",
-        "Moon",
-        "GateLight",
-        "Window",
-        "FrontLogo",
-    ];
+    private static readonly string[] BackLaserNames = ["FrontLights", "FrontLasers", "Logo", "LogoLight", "Moon", "GateLight", "Window", "FrontLogo"];
 
-    private static readonly string[] DoubleColorLaserNames =
-    [
-        "DoubleColorLaser",
-        "DoubleColorLaserL",
-        "DoubleColorLaserR",
-        "Laser",
-        "BottomPairLasers",
-        "Main Lasers Top",
-        "Main Lasers Bottom",
-    ];
+    private static readonly string[] DoubleColorLaserNames = ["DoubleColorLaser", "DoubleColorLaserL", "DoubleColorLaserR", "Laser", "BottomPairLasers", "Main Lasers Top", "Main Lasers Bottom"];
 
-    private static readonly string[] RotatingLaserNames =
-    [
-        "RotatingLasersPair",
-        "TunnelRotatingLasersPair",
-        "SpotlightGroupLeft",
-        "SpotlightGroupRight",
-    ];
+    private static readonly string[] RotatingLaserNames = ["RotatingLasersPair", "TunnelRotatingLasersPair", "SpotlightGroupLeft", "SpotlightGroupRight"];
 
     private static readonly string[] TrackLightNames =
     [
@@ -754,6 +677,4 @@ public class PrefabLightmapData : MonoBehaviour
 }
 
 [AttributeUsage(AttributeTargets.Field)]
-public sealed class SerializeField : Attribute
-{
-}
+public sealed class SerializeField : Attribute { }

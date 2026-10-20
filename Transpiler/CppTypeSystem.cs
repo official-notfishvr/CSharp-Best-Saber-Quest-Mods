@@ -66,7 +66,7 @@ internal sealed class CppTypeSystem
             return $"ArrayW<{MapArrayElementTypeName(arrayType.ElementType)}>";
 
         if (normalized is GenericParameter)
-            return "Il2CppObject*";
+            throw new NotSupportedException($"Cannot emit a type-safe C++ binding for unbound generic parameter '{normalized.FullName}'. Close the generic type or method with concrete argument types before transpiling.");
 
         var genericInstance = normalized as GenericInstanceType;
         var baseType = genericInstance?.ElementType ?? normalized;

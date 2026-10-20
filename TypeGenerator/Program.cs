@@ -13,22 +13,17 @@ class Program
 {
     static void Main(string[] args)
     {
-        // dotnet run --project E:\Other\VS\CSharp\CSharp-Best-Saber-Quest-Mods\TypeGenerator\TypeGenerator.csproj "E:\Other\VS\CSharp\CSharp-Best-Saber-Quest-Mods\quest-mod\extern\includes\bs-cordl\include" "E:\Other\VS\CSharp\CSharp-Best-Saber-Quest-Mods\TypeGenerator\Output"
+        // dotnet run --project G:\Other\VS\CSharp\CSharp-Best-Saber-Quest-Mods\TypeGenerator\TypeGenerator.csproj "G:\Other\VS\CSharp\CSharp-Best-Saber-Quest-Mods\quest-mod\extern\includes\bs-cordl\include" "G:\Other\VS\CSharp\CSharp-Best-Saber-Quest-Mods\TypeGenerator\Output"
         if (args.Length < 2)
         {
-            Console.WriteLine("Usage: TypeGenerator <include-folder> <output-folder>");
-            Console.WriteLine("Example: TypeGenerator C:\\path\\to\\bs-cordl\\include C:\\output\\Types");
-            return;
+            throw new ArgumentException("Usage: TypeGenerator <include-folder> <output-folder>");
         }
 
         var includeFolder = args[^2];
         var outputFolder = args[^1];
         if (!Directory.Exists(includeFolder))
         {
-            Console.WriteLine($"Error: include folder does not exist or is not a directory: {includeFolder}");
-            Console.WriteLine("Usage: TypeGenerator <include-folder> <output-folder>");
-            Console.WriteLine("Example: TypeGenerator C:\\path\\to\\bs-cordl\\include C:\\output\\Types");
-            return;
+            throw new DirectoryNotFoundException($"Game binding include folder does not exist: {includeFolder}");
         }
 
         var generator = new TypeStubGenerator();
@@ -219,15 +214,8 @@ class TypeStubGenerator
 
             foreach (var typeName in typeNames)
             {
-                try
-                {
-                    if (_types.TryGetValue((ns, typeName), out var data))
-                        GenerateTypeStub(writer, typeName, ns, data);
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Error generating {ns}.{typeName}: {ex.Message}");
-                }
+                if (_types.TryGetValue((ns, typeName), out var data))
+                    GenerateTypeStub(writer, typeName, ns, data);
             }
 
             writer.WriteLine("}");
@@ -510,7 +498,7 @@ class TypeStubGenerator
             if (methodName == "Main")
                 continue;
             var isAccessor = methodName.StartsWith("get_") || methodName.StartsWith("set_") || methodName.StartsWith("add_") || methodName.StartsWith("remove_");
-            var keepAccessor = methodName == "get_gameObject" || methodName == "get_GameObject" || methodName == "set_text";
+            var keepAccessor = methodName == "get_gameObject" || methodName == "get_GameObject" || methodName == "set_text" || methodName == "get_transform";
             if (isAccessor && !keepAccessor)
                 continue;
             if (methodName.StartsWith("getStaticF_") || methodName.StartsWith("setStaticF_"))
@@ -737,6 +725,7 @@ class TypeStubGenerator
         string lowerSetTextParamType = null;
         bool lowerSetTextStatic = false;
         bool hasUpperSetText = false;
+        string gameObjectTransformPropertyType = null;
         foreach (var method in data.Methods)
         {
             var mName = Sanitize(method.Name);
@@ -774,6 +763,11 @@ class TypeStubGenerator
             else if (methodNameActual == "set_Text" && method.Parameters.Count == 1)
             {
                 hasUpperSetText = true;
+            }
+            else if (methodNameActual == "get_transform" && method.Parameters.Count == 0 && csReturn != "void")
+            {
+                gameObjectTransformPropertyType = csReturn;
+                continue;
             }
 
             if (isInterface)
@@ -814,6 +808,9 @@ class TypeStubGenerator
                 writer.WriteLine($"{currentIndent}    public {staticMod}void set_Text({lowerSetTextParamType} value) {{ }}");
             }
         }
+
+        if (safeTypeName == "GameObject" && ns == "UnityEngine" && gameObjectTransformPropertyType != null)
+            writer.WriteLine($"{currentIndent}    public {gameObjectTransformPropertyType} transform {{ get => default!; }}");
 
         GenerateNestedStubs(writer, ns, typeName, currentIndent, nestedNameConflicts);
 

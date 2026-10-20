@@ -61,21 +61,22 @@ internal sealed class CustomTypeMethodEntry
     public required string CppName { get; init; }
 }
 
-internal enum HookPhase
+internal enum PatchBehavior
 {
     Full = 0,
     Prefix = 1,
     Postfix = 2,
 }
 
-internal sealed class HookDefinition
+internal sealed class PatchDefinition
 {
     public required string HookName { get; init; }
     public required string TargetMethod { get; init; }
     public required TypeReference TargetType { get; init; }
     public required MethodDefinition Method { get; init; }
+    public TypeReference? RuntimeReturnType { get; init; }
     public bool IsConstructor { get; init; }
-    public HookPhase Phase { get; init; } = HookPhase.Full;
+    public PatchBehavior Phase { get; init; } = PatchBehavior.Full;
 }
 
 internal sealed class CppExpression

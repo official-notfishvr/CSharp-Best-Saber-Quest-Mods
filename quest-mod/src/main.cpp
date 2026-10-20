@@ -531,8 +531,8 @@ static void InitializeConfigDefaults() {
     MenuPlatformPath = il2cpp_utils::newcsstr("TechWay 30.plat");
     GameplayPlatformPath = il2cpp_utils::newcsstr("TechWay 30.plat");
     MultiplayerPlatformPath = il2cpp_utils::newcsstr("");
-}
-
+}
+
 static void CustomFloorPlugin_QuestCustomFloorMod_ApplyMenuPlatform_GlobalNamespace_MenuEnvironmentManager(GlobalNamespace::MenuEnvironmentManager* manager);
 static void CustomFloorPlugin_QuestCustomFloorMod_ApplyGameplayPlatform();
 static ::StringW CustomFloorPlugin_QuestCustomFloorMod_ChooseGameplayPlatformPath();

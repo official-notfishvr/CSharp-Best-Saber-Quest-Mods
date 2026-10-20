@@ -31,33 +31,35 @@ public static class TestMod
         if (!firstActivation)
             return;
 
-        BSMLLite.CreateText(root, "SampleMod", 4.0f, BSMLLite.Vector2(0.0f, 0.0f), BSMLLite.Vector2(60.0f, 8.0f));
+        BSMLLite.CreateText(root.transform, "SampleMod", 4.0f, BSMLLite.Vector2(0.0f, 0.0f), BSMLLite.Vector2(60.0f, 8.0f));
     }
 
-    [Hook(typeof(StandardLevelDetailViewController), nameof(StandardLevelDetailViewController.DidActivate), Phase = HookPhase.Prefix)]
-    public static void OnLevelScreenActivatePrefix(StandardLevelDetailViewController self, bool firstActivation, bool addedToHierarchy, bool screenSystemEnabling)
+    [Patch(typeof(StandardLevelDetailViewController), nameof(StandardLevelDetailViewController.DidActivate), PatchKind.Before)]
+    public static bool OnLevelScreenActivatePrefix(StandardLevelDetailViewController self, bool firstActivation, bool addedToHierarchy, bool screenSystemEnabling)
     {
-        if (!Enabled)
-            return;
+        if (Enabled)
+        {
+            var detailView = self._standardLevelDetailView;
+            if (detailView != null)
+            {
+                if (detailView._buttonsWrapper != null)
+                    detailView._buttonsWrapper.SetActive(true);
 
-        var detailView = self._standardLevelDetailView;
-        if (detailView == null)
-            return;
+                if (detailView._actionButtonText != null)
+                    detailView._actionButtonText.set_Text(ButtonText + PrefixSuffix);
 
-        if (detailView._buttonsWrapper != null)
-            detailView._buttonsWrapper.SetActive(true);
+                if (detailView._beatmapLevelVersionText != null)
+                    detailView._beatmapLevelVersionText.set_Text(VersionStatusText);
 
-        if (detailView._actionButtonText != null)
-            detailView._actionButtonText.set_Text(ButtonText + PrefixSuffix);
+                if (detailView._actionButton != null)
+                    detailView._actionButton.m_Interactable = true;
+            }
+        }
 
-        if (detailView._beatmapLevelVersionText != null)
-            detailView._beatmapLevelVersionText.set_Text(VersionStatusText);
-
-        if (detailView._actionButton != null)
-            detailView._actionButton.m_Interactable = true;
+        return true;
     }
 
-    [Hook(typeof(StandardLevelDetailViewController), nameof(StandardLevelDetailViewController.DidActivate), Phase = HookPhase.Postfix)]
+    [Patch(typeof(StandardLevelDetailViewController), nameof(StandardLevelDetailViewController.DidActivate), PatchKind.After)]
     public static void OnLevelScreenActivatePostfix(StandardLevelDetailViewController self, bool firstActivation, bool addedToHierarchy, bool screenSystemEnabling)
     {
         if (!Enabled)

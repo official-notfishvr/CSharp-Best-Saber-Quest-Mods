@@ -32,7 +32,7 @@ internal sealed partial class IlMethodTranslator
     private int _loopLabelCounter;
     private int _temporaryCounter;
 
-    public IlMethodTranslator(HookDefinition hook, CppTypeSystem typeSystem, IEnumerable<ConfigEntry> configValues, IEnumerable<LocalStaticFieldEntry> localStaticFields, TypeMetadataIndex metadataIndex, IReadOnlyDictionary<string, string>? localMethodNames = null)
+    public IlMethodTranslator(PatchDefinition hook, CppTypeSystem typeSystem, IEnumerable<ConfigEntry> configValues, IEnumerable<LocalStaticFieldEntry> localStaticFields, TypeMetadataIndex metadataIndex, IReadOnlyDictionary<string, string>? localMethodNames = null)
     {
         Hook = hook;
         _typeSystem = typeSystem;
@@ -49,7 +49,7 @@ internal sealed partial class IlMethodTranslator
         _localStaticFieldsByField = localStaticFields.ToDictionary(field => BuildConfigAccessorKey(field.DeclaringTypeFullName, field.Name), field => field, StringComparer.Ordinal);
     }
 
-    public HookDefinition Hook { get; }
+    public PatchDefinition Hook { get; }
     public List<string> Statements { get; } = new();
     public HashSet<string> RequiredIncludes { get; } = new(StringComparer.OrdinalIgnoreCase);
 

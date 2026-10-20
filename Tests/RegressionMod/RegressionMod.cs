@@ -10,7 +10,7 @@ public class DummyTarget
 [Mod("com.example.regressionmod", "1.0.0")]
 public static class RegressionHooks
 {
-    [Hook(typeof(DummyTarget), nameof(DummyTarget.Compute))]
+    [Patch(typeof(DummyTarget), nameof(DummyTarget.Compute), PatchKind.Replace)]
     public static int OnCompute(DummyTarget self, int input)
     {
         var result = UseSwitchAndLoops(input);

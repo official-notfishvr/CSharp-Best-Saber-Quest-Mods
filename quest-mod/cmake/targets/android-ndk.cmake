@@ -4,21 +4,25 @@ if(NOT DEFINED CMAKE_ANDROID_NDK)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ndkpath.txt")
         file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/ndkpath.txt" CMAKE_ANDROID_NDK)
     else()
-        if(EXISTS $ENV{ANDROID_NDK_HOME})
+        if(DEFINED ENV{ANDROID_NDK_HOME} AND EXISTS "$ENV{ANDROID_NDK_HOME}")
             set(CMAKE_ANDROID_NDK $ENV{ANDROID_NDK_HOME})
-        elseif(EXISTS $ENV{ANDROID_NDK_LATEST_HOME})
+        elseif(DEFINED ENV{ANDROID_NDK_LATEST_HOME} AND EXISTS "$ENV{ANDROID_NDK_LATEST_HOME}")
             set(CMAKE_ANDROID_NDK $ENV{ANDROID_NDK_LATEST_HOME})
         endif()
     endif()
 endif()
 
 if(NOT DEFINED CMAKE_ANDROID_NDK)
-    message(Big time error buddy, no NDK)
+    message(FATAL_ERROR "Android NDK not found. Run 'qpm ndk resolve --download' from quest-mod, set ANDROID_NDK_HOME, or add the NDK directory to quest-mod/ndkpath.txt.")
 endif()
 
 string(REPLACE "\\" "/" CMAKE_ANDROID_NDK ${CMAKE_ANDROID_NDK})
 
 message(STATUS "Using NDK ${CMAKE_ANDROID_NDK}")
+
+if(NOT EXISTS "${CMAKE_ANDROID_NDK}/build/cmake/android.toolchain.cmake")
+    message(FATAL_ERROR "Invalid Android NDK path '${CMAKE_ANDROID_NDK}': build/cmake/android.toolchain.cmake was not found. Check quest-mod/ndkpath.txt or ANDROID_NDK_HOME.")
+endif()
 
 # check if contains space
 if(CMAKE_ANDROID_NDK MATCHES " ")
