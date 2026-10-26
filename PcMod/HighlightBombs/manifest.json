@@ -1,0 +1,7 @@
+{
+  "id": "com.meivyn.BeatSaber.HighlightBombs",
+  "name": "HighlightBombs",
+  "author": "Meivyn",
+  "version": "1.0.0",
+  "description": "Adds a visible outline to bomb notes."
+}

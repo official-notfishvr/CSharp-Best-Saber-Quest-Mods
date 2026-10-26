@@ -13,7 +13,7 @@ internal static class IlInstructionLowerer
             return true;
         if (code == Code.Ret)
         {
-            if (context.Method.ReturnType.MetadataType == MetadataType.Void)
+            if (context.EffectiveReturnType.MetadataType == MetadataType.Void)
             {
                 RequireStack(context, instruction, stack, 0);
                 statement = Raw(context.NativeReturnType == "void" ? "return;" : "return result;", "IL return");
@@ -21,8 +21,8 @@ internal static class IlInstructionLowerer
             else
             {
                 var value = Pop(context, instruction, stack);
-                var ilBooleanReturn = context.Method.ReturnType.MetadataType == MetadataType.Boolean && value.PcType == "System.Int32";
-                if ((!ilBooleanReturn && value.PcType != context.Method.ReturnType.FullName) || value.IsByRef || context.NativeReturnType == "void")
+                var ilBooleanReturn = context.EffectiveReturnType.MetadataType == MetadataType.Boolean && value.PcType == "System.Int32";
+                if ((!ilBooleanReturn && value.PcType != context.EffectiveReturnType.FullName) || value.IsByRef || context.NativeReturnType == "void")
                     throw Unsupported(context.Method, instruction, "return value does not match the translated method return type");
                 statement = Raw($"return {value.Code};", "IL return", value.ApiMapping);
             }
@@ -38,9 +38,20 @@ internal static class IlInstructionLowerer
             var targetType = QuestApiTypeMapper.Map(instanceType);
             if (source.IsByRef || source.DeferredBoxedPrimitiveType is not null || instanceType.IsValueType || targetType is null || !targetType.EndsWith("*", StringComparison.Ordinal))
                 throw Unsupported(context.Method, instruction, "isinst requires a reference source and a verified Quest reference type");
-            var boxedSource = $"reinterpret_cast<Il2CppObject*>({source.Code})";
-            var converted = $"reinterpret_cast<{targetType}>({source.Code})";
+            var sourceType = context.Method.Module.GetType(source.PcType);
+            var sourceNativeType = sourceType is null ? MapFullNameToNativeReference(source.PcType) : QuestApiTypeMapper.Map(sourceType);
+            var pointerSource = sourceNativeType is not null && sourceNativeType.EndsWith("*", StringComparison.Ordinal) ? $"static_cast<{sourceNativeType}>({source.Code})" : source.Code;
+            var boxedSource = $"reinterpret_cast<Il2CppObject*>({pointerSource})";
+            var converted = $"reinterpret_cast<{targetType}>({pointerSource})";
             stack.Push(new QuestValue($"(({source.Code}) == nullptr || !il2cpp_functions::class_is_assignable_from(classof({targetType}), il2cpp_functions::object_get_class({boxedSource})) ? nullptr : {converted})", instanceType.FullName, false, source.ApiMapping));
+            return true;
+        }
+        if (code == Code.Ldftn && instruction.Operand is MethodReference functionMethod)
+        {
+            var target = functionMethod.Resolve() ?? throw Unsupported(context.Method, instruction, "function pointer target could not be resolved");
+            if (target.Module != context.Method.Module || target.IsStatic)
+                throw Unsupported(context.Method, instruction, "ldftn currently requires an instance method in the generated mod assembly");
+            stack.Push(new QuestValue("", "System.IntPtr", false, FunctionPointerTarget: target));
             return true;
         }
         if (TryLoadAddress(context, instruction, stack))
@@ -71,6 +82,17 @@ internal static class IlInstructionLowerer
         }
         if (code == Code.Ldsfld && instruction.Operand is FieldReference loadField)
         {
+            if (loadField.Resolve() is { } compilerField && IlTranslationContext.IsCompilerDelegateCache(compilerField))
+            {
+                if (compilerField.Name.StartsWith("<>9__", StringComparison.Ordinal))
+                    stack.Push(new QuestValue("nullptr", compilerField.FieldType.FullName, false));
+                else
+                {
+                    var nativeClosure = QuestApiTypeMapper.Map(compilerField.FieldType) ?? throw Unsupported(context.Method, instruction, "compiler closure type has no Quest representation");
+                    stack.Push(new QuestValue($"{nativeClosure.TrimEnd('*')}::New_ctor()", compilerField.FieldType.FullName, false));
+                }
+                return true;
+            }
             if (!context.StaticFields.TryGetValue(loadField.Resolve()?.FullName ?? loadField.FullName, out var staticValue))
                 throw Unsupported(context.Method, instruction);
             stack.Push(staticValue);
@@ -87,6 +109,12 @@ internal static class IlInstructionLowerer
         }
         if (code == Code.Stsfld && instruction.Operand is FieldReference storeField)
         {
+            if (storeField.Resolve() is { } compilerField && IlTranslationContext.IsCompilerDelegateCache(compilerField))
+            {
+                var cachedDelegate = Pop(context, instruction, stack);
+                statement = Raw($"(void)({cachedDelegate.Code});", "IL compiler delegate cache store");
+                return true;
+            }
             var fieldName = storeField.Resolve()?.FullName ?? storeField.FullName;
             if (!context.StaticFields.TryGetValue(fieldName, out var staticValue))
                 throw Unsupported(context.Method, instruction);
@@ -173,6 +201,11 @@ internal static class IlInstructionLowerer
             return true;
         if (TryBinary(context, instruction, stack) || TryUnary(instruction, stack) || TryConvert(instruction, stack))
             return true;
+        if (code == Code.Newobj && instruction.Operand is MethodReference constructor)
+        {
+            LowerNewObject(context, instruction, constructor, stack);
+            return true;
+        }
         if (code is Code.Call or Code.Callvirt && instruction.Operand is MethodReference call)
         {
             statement = LowerCall(context, instruction, call, stack);
@@ -224,6 +257,70 @@ internal static class IlInstructionLowerer
             return true;
         }
         return false;
+    }
+
+    private static void LowerNewObject(IlTranslationContext context, Instruction instruction, MethodReference constructor, Stack<QuestValue> stack)
+    {
+        var definition = constructor.Resolve() ?? throw Unsupported(context.Method, instruction, "constructor could not be resolved");
+        if (definition.DeclaringType.BaseType?.FullName == "System.MulticastDelegate")
+        {
+            if (constructor.Parameters.Count != 2)
+                throw Unsupported(context.Method, instruction, "delegate constructors must have the standard (target, function pointer) shape");
+            var functionPointer = Pop(context, instruction, stack);
+            var target = Pop(context, instruction, stack);
+            if (functionPointer.FunctionPointerTarget is null)
+                throw Unsupported(context.Method, instruction, "delegate target must be an IL function pointer from ldftn");
+            var delegateType = QuestApiTypeMapper.Map(constructor.DeclaringType) ?? throw Unsupported(context.Method, instruction, "delegate type has no Quest representation");
+            var method = functionPointer.FunctionPointerTarget;
+            var thunk = GeneratedModTypeEmitter.FunctionThunkName(method);
+            var methodPointer = $"::System::IntPtr(reinterpret_cast<void*>(&{thunk}))";
+            var nativeDelegateType = delegateType.TrimEnd('*');
+            var delegateConstruction = $"{nativeDelegateType}::New_ctor({target.Code}, {methodPointer})";
+            stack.Push(new QuestValue(delegateConstruction, constructor.DeclaringType.FullName, false));
+            return;
+        }
+        if (!definition.IsConstructor || definition.IsStatic)
+            throw Unsupported(context.Method, instruction, "newobj requires an instance constructor");
+        if (definition.DeclaringType.IsValueType)
+        {
+            var nativeValueType = QuestApiTypeMapper.Map(constructor.DeclaringType) ?? throw Unsupported(context.Method, instruction, "constructed value type has no Quest representation");
+            var valueArguments = new QuestValue[constructor.Parameters.Count];
+            for (var i = valueArguments.Length - 1; i >= 0; i--)
+                valueArguments[i] = Pop(context, instruction, stack);
+            stack.Push(new QuestValue($"{nativeValueType}({string.Join(", ", valueArguments.Select(AsCppValue))})", constructor.DeclaringType.FullName, false));
+            return;
+        }
+        var nativeType = QuestApiTypeMapper.Map(constructor.DeclaringType) ?? throw Unsupported(context.Method, instruction, "constructed type has no Quest representation");
+        var questType = nativeType.TrimEnd('*');
+        var arguments = new QuestValue[constructor.Parameters.Count];
+        for (var i = arguments.Length - 1; i >= 0; i--)
+        {
+            arguments[i] = Pop(context, instruction, stack);
+            if (arguments[i].IsByRef)
+                throw Unsupported(context.Method, instruction, "constructor by-reference arguments require an explicit ABI mapping");
+        }
+        var argumentTypes = constructor.Parameters.Select(parameter => QuestApiTypeMapper.Map(parameter.ParameterType) ?? throw Unsupported(context.Method, instruction, $"constructor parameter {parameter.ParameterType.FullName} has no Quest representation")).ToArray();
+        var publicHeader = questType.Split('<')[0].TrimStart(':').Replace("::", "/", StringComparison.Ordinal) + ".hpp";
+        var declarationHeader = Path.Combine(Path.GetDirectoryName(publicHeader) ?? "", "zzzz__" + questType.Split('<')[0].Split("::").Last() + "_def.hpp").Replace('\\', '/');
+        var mapping = new ApiCallMapping(
+            context.Catalog.Profile.Id,
+            definition.Module.Assembly.Name.Name,
+            definition.DeclaringType.FullName,
+            definition.Name,
+            definition.GenericParameters.Count,
+            definition.ReturnType.FullName,
+            definition.Parameters.Select(parameter => parameter.ParameterType.FullName).ToArray(),
+            false,
+            questType.TrimStart(':'),
+            publicHeader,
+            declarationHeader,
+            "New_ctor",
+            nativeType,
+            argumentTypes,
+            true
+        );
+        var code = $"::{questType.TrimStart(':')}::New_ctor({string.Join(", ", arguments.Select(AsCppValue))})";
+        stack.Push(new QuestValue(code, constructor.DeclaringType.FullName, false, mapping));
     }
 
     public static bool TryEvaluateValue(IlTranslationContext context, int start, int end, out QuestValue value)
@@ -356,7 +453,7 @@ internal static class IlInstructionLowerer
                 instruction.OpCode.Code == Code.Ldobj ? (instruction.Operand as TypeReference)?.FullName
                 : instruction.OpCode.Code == Code.Ldind_Ref ? address.PcType
                 : IndirectType(instruction.OpCode.Code);
-            if (!IsSupportedIndirectType(expectedType, instruction.OpCode.Code) || !IndirectAddressMatches(instruction.OpCode.Code, address.PcType, expectedType))
+            if (!IsSupportedIndirectType(expectedType, instruction.OpCode.Code, context.Method.Module) || !IndirectAddressMatches(instruction.OpCode.Code, address.PcType, expectedType))
                 throw Unsupported(context.Method, instruction);
             stack.Push(new QuestValue($"(*({address.Code}))", expectedType!, false, address.ApiMapping));
             return true;
@@ -369,7 +466,7 @@ internal static class IlInstructionLowerer
                 instruction.OpCode.Code == Code.Stobj ? (instruction.Operand as TypeReference)?.FullName
                 : instruction.OpCode.Code == Code.Stind_Ref ? address.PcType
                 : IndirectType(instruction.OpCode.Code);
-            if (!address.IsByRef || !IsSupportedIndirectType(expectedType, instruction.OpCode.Code) || !IndirectAddressMatches(instruction.OpCode.Code, address.PcType, expectedType) || !IndirectStoreValueMatches(instruction.OpCode.Code, value.PcType, expectedType))
+            if (!address.IsByRef || !IsSupportedIndirectType(expectedType, instruction.OpCode.Code, context.Method.Module) || !IndirectAddressMatches(instruction.OpCode.Code, address.PcType, expectedType) || !IndirectStoreValueMatches(instruction.OpCode.Code, value.PcType, expectedType))
                 throw Unsupported(context.Method, instruction);
             statement = Raw($"(*({address.Code})) = {value.Code};", "IL indirect assignment", value.ApiMapping);
             return true;
@@ -393,9 +490,26 @@ internal static class IlInstructionLowerer
             _ => null,
         };
 
-    private static bool IsSupportedIndirectType(string? type, Code code) =>
+    private static bool IsSupportedIndirectType(string? type, Code code, ModuleDefinition module) =>
         type is "System.Boolean" or "System.Byte" or "System.SByte" or "System.Int16" or "System.UInt16" or "System.Int32" or "System.UInt32" or "System.Int64" or "System.UInt64" or "System.Single" or "System.Double" or "System.IntPtr" or "System.UIntPtr"
-        || code is Code.Ldind_Ref or Code.Stind_Ref && type is not null;
+        || code is Code.Ldind_Ref or Code.Stind_Ref && type is not null
+        || code is Code.Ldobj or Code.Stobj && type is not null && IsMappedValueType(module, type);
+
+    private static bool IsMappedValueType(ModuleDefinition module, string fullName)
+    {
+        var definition = module.GetType(fullName);
+        if (definition is not null)
+            return definition.IsValueType && QuestApiTypeMapper.Map(definition) is not null;
+        foreach (var reference in module.AssemblyReferences)
+            try
+            {
+                var resolved = module.AssemblyResolver.Resolve(reference).MainModule.GetType(fullName);
+                if (resolved is not null)
+                    return resolved.IsValueType && QuestApiTypeMapper.Map(resolved) is not null;
+            }
+            catch (AssemblyResolutionException) { }
+        return false;
+    }
 
     private static bool IndirectAddressMatches(Code code, string addressType, string? opcodeType)
     {
@@ -440,14 +554,15 @@ internal static class IlInstructionLowerer
         var code = instruction.OpCode.Code;
         if (code is Code.Ldarga or Code.Ldarga_S && instruction.Operand is ParameterDefinition parameter)
         {
-            if (!context.Arguments.TryGetValue(parameter.Index, out var argument) || argument.IsByRef || !CanTakeAddress(argument.PcType))
+            var argumentIndex = parameter.Index + (context.Method.IsStatic ? 0 : 1);
+            if (!context.Arguments.TryGetValue(argumentIndex, out var argument) || argument.IsByRef || !CanTakeAddress(parameter.ParameterType))
                 throw Unsupported(context.Method, instruction);
             stack.Push(argument with { Code = $"&({argument.Code})", IsByRef = true });
             return true;
         }
         if (code is Code.Ldloca or Code.Ldloca_S && instruction.Operand is VariableDefinition variable)
         {
-            if (!context.Locals.TryGetValue(variable.Index, out var local) || !CanTakeAddress(local.PcType))
+            if (!context.Locals.TryGetValue(variable.Index, out var local) || !CanTakeAddress(context.Method.Body.Variables[variable.Index].VariableType))
                 throw Unsupported(context.Method, instruction);
             stack.Push(local with { Code = $"&({local.Code})", IsByRef = true });
             return true;
@@ -492,6 +607,8 @@ internal static class IlInstructionLowerer
     }
 
     private static bool CanTakeAddress(string type) => type is "System.Boolean" or "System.Byte" or "System.SByte" or "System.Int16" or "System.UInt16" or "System.Int32" or "System.UInt32" or "System.Int64" or "System.UInt64" or "System.Single" or "System.Double";
+
+    private static bool CanTakeAddress(TypeReference type) => CanTakeAddress(type.FullName) || type.IsValueType && QuestApiTypeMapper.Map(type) is not null;
 
     private static bool TryLoadLocal(IlTranslationContext context, Instruction instruction, Stack<QuestValue> stack, IReadOnlyDictionary<int, QuestValue>? locals = null)
     {
@@ -547,6 +664,12 @@ internal static class IlInstructionLowerer
             return new QuestLogStatement(value.IsStringLiteral ? value.Code : "", level, call.FullName, value.IsStringLiteral ? null : value.Code, value.ApiMapping);
         }
 
+        if (context.Method.IsConstructor && call.Name == ".ctor" && call.DeclaringType.FullName != context.Method.DeclaringType.FullName && call.HasThis)
+        {
+            _ = Pop(context, instruction, stack);
+            return Raw("", "IL base constructor call");
+        }
+
         if (IsSameModAssembly(context.Method.Module, call.DeclaringType.Scope.Name))
             return LowerModLocalCall(context, instruction, call, stack);
 
@@ -570,7 +693,9 @@ internal static class IlInstructionLowerer
                     _ => throw Unsupported(context.Method, instruction, $"unknown Quest library argument conversion '{conversion}' for parameter {i}"),
                 };
             }
-            args[i] = argument with { Code = AsCppValue(argument) };
+            var closedParameter = ResolveClosedCallType(context, call.Parameters[i].ParameterType, call);
+            var closedNativeParameter = QuestApiTypeMapper.Map(closedParameter) ?? mapping.QuestParameters[i];
+            args[i] = argument with { Code = IlInterfaceConversion.ConvertArgument(context, argument, closedParameter, closedNativeParameter) };
         }
         var receiver = call.HasThis ? Pop(context, instruction, stack) : null;
         if (receiver?.DeferredBoxedPrimitiveType is not null)
@@ -578,10 +703,13 @@ internal static class IlInstructionLowerer
         var argumentCode = string.Join(", ", args.Select(argument => argument.Code));
         var genericArguments =
             call is GenericInstanceMethod genericCall && genericCall.GenericArguments.Count > 0
-                ? "<" + string.Join(", ", genericCall.GenericArguments.Select(argument => QuestApiTypeMapper.Map(argument) ?? throw Unsupported(context.Method, instruction, $"generic argument '{argument.FullName}' has no Quest type mapping"))) + ">"
+                ? "<" + string.Join(", ", genericCall.GenericArguments.Select(argument => QuestApiTypeMapper.Map(context.ResolveType(argument)) ?? throw Unsupported(context.Method, instruction, $"generic argument '{argument.FullName}' has no Quest type mapping"))) + ">"
                 : "";
         var callName = mapping.QuestMethod + genericArguments;
-        var callCode = receiver is null ? $"::{mapping.QuestType}::{callName}({argumentCode})" : $"{receiver.Code}{(call.DeclaringType.IsValueType ? "." : "->")}{callName}({argumentCode})";
+        var receiverCode = receiver is { IsByRef: true } ? $"(*({receiver.Code}))" : receiver?.Code;
+        if (receiver is not null && context.FindKnownType(receiver.PcType) is { } receiverType && IlInterfaceConversion.TryConvert(receiverType, call.DeclaringType, receiverCode!, out var convertedReceiver, call.Name))
+            receiverCode = convertedReceiver;
+        var callCode = receiver is null ? $"::{mapping.QuestType}::{callName}({argumentCode})" : $"{receiverCode}{(call.DeclaringType.IsValueType ? "." : "->")}{callName}({argumentCode})";
         if (call.ReturnType.MetadataType == MetadataType.Void)
             return Raw(callCode + ";", call.FullName, mapping);
         callCode = mapping.QuestReturnConversion switch
@@ -591,23 +719,69 @@ internal static class IlInstructionLowerer
             "StringViewToStringW" => $"StringW(std::string({callCode}))",
             var conversion => throw Unsupported(context.Method, instruction, $"unknown Quest library return conversion '{conversion}'"),
         };
-        var returnType = call.ReturnType;
-        if (returnType is GenericParameter genericReturn && genericReturn.Type == GenericParameterType.Method && call is GenericInstanceMethod closedCall && genericReturn.Position < closedCall.GenericArguments.Count)
-            returnType = closedCall.GenericArguments[genericReturn.Position];
+        var returnType = ResolveClosedCallType(context, call.ReturnType, call);
         stack.Push(new QuestValue(callCode, returnType.FullName, false, mapping));
         return null;
+    }
+
+    private static string? MapFullNameToNativeReference(string fullName)
+    {
+        if (fullName.StartsWith("System.", StringComparison.Ordinal))
+            return null;
+        var parts = fullName.Split('.');
+        var nativeName = parts.Length == 1 ? "::GlobalNamespace::" + parts[0] : "::" + string.Join("::", parts);
+        return nativeName + "*";
+    }
+
+    private static TypeReference ResolveClosedCallType(IlTranslationContext context, TypeReference type, MethodReference call)
+    {
+        if (type is GenericParameter parameter)
+        {
+            if (parameter.Type == GenericParameterType.Method && call is GenericInstanceMethod method && parameter.Position < method.GenericArguments.Count)
+                return context.ResolveType(method.GenericArguments[parameter.Position]);
+            if (parameter.Type == GenericParameterType.Type && call.DeclaringType is GenericInstanceType declaring && parameter.Position < declaring.GenericArguments.Count)
+                return context.ResolveType(declaring.GenericArguments[parameter.Position]);
+        }
+        if (type is ArrayType array)
+        {
+            var element = ResolveClosedCallType(context, array.ElementType, call);
+            return array.IsVector ? new ArrayType(element) : new ArrayType(element, array.Rank);
+        }
+        if (type is GenericInstanceType generic)
+        {
+            var instance = new GenericInstanceType(generic.ElementType);
+            foreach (var argument in generic.GenericArguments)
+                instance.GenericArguments.Add(ResolveClosedCallType(context, argument, call));
+            return instance;
+        }
+        return context.ResolveType(type);
     }
 
     private static QuestLogStatement? LowerModLocalCall(IlTranslationContext context, Instruction instruction, MethodReference call, Stack<QuestValue> stack)
     {
         var method = call.Resolve() ?? throw new InvalidOperationException($"Could not resolve mod-local method {call.FullName}.");
         var hasReceiver = call.HasThis;
-        if (method.Module != context.Method.Module || !method.HasBody || method.GenericParameters.Count != 0 || call.GenericParameters.Count != 0 || method.IsStatic == hasReceiver)
-            throw new InvalidOperationException($"Mod-local call {call.FullName} is outside the supported subset (same-module non-generic methods with a body).");
-        if (method.Parameters.Any(parameter => !CanInlineHelperType(parameter.ParameterType)) || (hasReceiver && method.ReturnType.MetadataType != MetadataType.Void) || (!hasReceiver && !CanInlineHelperType(method.ReturnType)))
+        if (method.Module != context.Method.Module || !method.HasBody || method.IsStatic == hasReceiver)
+            throw new InvalidOperationException($"Mod-local call {call.FullName} is outside the supported subset (same-module methods with a body).");
+        var genericArguments = new Dictionary<int, TypeReference>();
+        if (method.GenericParameters.Count != 0)
+        {
+            if (call is not GenericInstanceMethod closedCall || closedCall.GenericArguments.Count != method.GenericParameters.Count)
+                throw new InvalidOperationException($"Mod-local generic call {call.FullName} must provide closed generic arguments.");
+            for (var i = 0; i < closedCall.GenericArguments.Count; i++)
+            {
+                var resolvedArgument = context.ResolveType(closedCall.GenericArguments[i]);
+                if (!CanInlineHelperType(resolvedArgument))
+                    throw new InvalidOperationException($"Generic argument '{resolvedArgument.FullName}' on mod-local call {call.FullName} is outside the inline scalar subset.");
+                genericArguments[i] = resolvedArgument;
+            }
+        }
+        var effectiveParameters = method.Parameters.Select(parameter => ResolveType(parameter.ParameterType, genericArguments)).ToArray();
+        var effectiveReturn = ResolveType(method.ReturnType, genericArguments);
+        if (effectiveParameters.Any(parameter => !CanInlineHelperType(parameter)) || !CanInlineHelperType(effectiveReturn))
             throw new InvalidOperationException($"Mod-local helper {method.FullName} has a parameter or return type outside the inline scalar subset.");
         if (!context.ActiveLocalMethods.Add(method.FullName))
-            throw new InvalidOperationException($"Recursive mod-local helper call cycle is not supported: {method.FullName}.");
+            throw new InvalidOperationException($"Recursive mod-local helper call cycle is not supported: {call.FullName}.");
 
         try
         {
@@ -615,11 +789,12 @@ internal static class IlInstructionLowerer
             for (var index = arguments.Length - 1; index >= 0; index--)
             {
                 arguments[index] = Pop(context, instruction, stack);
-                var helperParameter = method.Parameters[index].ParameterType;
+                var helperParameter = effectiveParameters[index];
                 var helperIsByReference = helperParameter is ByReferenceType;
                 var helperValueType = helperIsByReference ? ((ByReferenceType)helperParameter).ElementType : helperParameter;
                 var enumFromInt32 = helperValueType.Resolve()?.IsEnum == true && arguments[index].PcType == "System.Int32";
-                if (arguments[index].IsByRef != helperIsByReference || arguments[index].PcType != helperValueType.FullName && !enumFromInt32)
+                var booleanFromInt32 = helperValueType.MetadataType == MetadataType.Boolean && arguments[index].PcType == "System.Int32";
+                if (arguments[index].IsByRef != helperIsByReference || arguments[index].PcType != helperValueType.FullName && !enumFromInt32 && !booleanFromInt32)
                     throw Unsupported(context.Method, instruction, $"helper argument {index} does not match {method.Parameters[index].ParameterType.FullName}");
             }
 
@@ -632,33 +807,33 @@ internal static class IlInstructionLowerer
             var helperArguments = new Dictionary<int, QuestValue>();
             if (receiver is not null)
             {
-                lambdaParameters.Add("auto* helper_this");
+                lambdaParameters.Add((QuestApiTypeMapper.Map(method.DeclaringType) ?? throw Unsupported(context.Method, instruction, "helper receiver has no Quest type")) + " helper_this");
                 lambdaArguments.Add(receiver.Code);
                 helperArguments[0] = receiver with { Code = "helper_this" };
             }
             for (var index = 0; index < method.Parameters.Count; index++)
             {
                 var name = "helper_arg_" + index;
-                var helperParameter = method.Parameters[index].ParameterType;
+                var helperParameter = effectiveParameters[index];
                 var helperIsByReference = helperParameter is ByReferenceType;
                 var helperValueType = helperIsByReference ? ((ByReferenceType)helperParameter).ElementType : helperParameter;
-                var cppType = helperValueType.Resolve()?.IsEnum == true ? "auto" : IlControlFlowLowerer.CppLocalType(helperValueType, method) + (helperIsByReference ? "&" : "");
+                var cppType = helperIsByReference ? IlControlFlowLowerer.CppLocalType(helperValueType, method) + "&" : "auto";
                 lambdaParameters.Add(cppType + " " + name);
-                lambdaArguments.Add(arguments[index].Code);
+                lambdaArguments.Add(AsCppValue(arguments[index]));
                 var argumentIndex = index + (hasReceiver ? 1 : 0);
                 helperArguments[argumentIndex] = helperIsByReference ? new QuestValue($"(&{name})", helperValueType.FullName, false, IsByRef: true) : new QuestValue(name, helperValueType.FullName, false);
             }
 
-            var cppReturn = IlControlFlowLowerer.CppLocalType(method.ReturnType, method);
-            var helperContext = new IlTranslationContext(method, context.Catalog, helperArguments, cppReturn, context.ActiveLocalMethods);
+            var cppReturn = IlControlFlowLowerer.CppLocalType(effectiveReturn, method);
+            var helperContext = new IlTranslationContext(method, context.Catalog, helperArguments, cppReturn, context.ActiveLocalMethods, genericArguments);
             var lowered = IlControlFlowLowerer.LowerRange(helperContext, 0, method.Body.Instructions.Count, includeLocalDeclarations: true);
             var body = IlControlFlowLowerer.RenderInlineHelper(lowered);
             var lambda = $"([&]({string.Join(", ", lambdaParameters)}) -> {cppReturn} {{\n{Indent(body)}\n}}({string.Join(", ", lambdaArguments)}))";
             var staticFields = helperContext.StaticFieldDeclarations.Select(pair => new QuestStaticField(pair.Key, pair.Value)).Concat(lowered.SelectMany(statement => statement.StaticFields ?? Array.Empty<QuestStaticField>())).DistinctBy(field => field.Name).ToArray();
-            if (method.ReturnType.MetadataType == MetadataType.Void)
+            if (effectiveReturn.MetadataType == MetadataType.Void)
                 return Raw(lambda + ";", call.FullName, staticFields: staticFields);
 
-            stack.Push(new QuestValue(lambda, method.ReturnType.FullName, false));
+            stack.Push(new QuestValue(lambda, effectiveReturn.FullName, false));
             return null;
         }
         finally
@@ -667,11 +842,34 @@ internal static class IlInstructionLowerer
         }
     }
 
+    private static TypeReference ResolveType(TypeReference type, IReadOnlyDictionary<int, TypeReference> genericArguments)
+    {
+        if (type is GenericParameter parameter && parameter.Type == GenericParameterType.Method && genericArguments.TryGetValue(parameter.Position, out var argument))
+            return argument;
+        if (type is ArrayType array)
+        {
+            var elementType = ResolveType(array.ElementType, genericArguments);
+            return array.IsVector ? new ArrayType(elementType) : new ArrayType(elementType, array.Rank);
+        }
+        if (type is ByReferenceType byReference)
+            return new ByReferenceType(ResolveType(byReference.ElementType, genericArguments));
+        if (type is GenericInstanceType generic)
+        {
+            var instance = new GenericInstanceType(generic.ElementType);
+            foreach (var item in generic.GenericArguments)
+                instance.GenericArguments.Add(ResolveType(item, genericArguments));
+            return instance;
+        }
+        return type;
+    }
+
     private static bool CanInlineHelperType(TypeReference type)
     {
         if (type is ByReferenceType byReference)
             return IsInlineValueType(byReference.ElementType) || byReference.ElementType.FullName == "System.String";
-        return type.FullName == "System.Void" || IsInlineValueType(type) || type.FullName == "System.String";
+        if (type.FullName == "System.Void" || IsInlineValueType(type) || type.FullName == "System.String")
+            return true;
+        return QuestApiTypeMapper.Map(type) is not null && !type.FullName.StartsWith("System.Action", StringComparison.Ordinal) && !type.FullName.StartsWith("System.Func", StringComparison.Ordinal);
     }
 
     private static bool IsInlineValueType(TypeReference type) =>

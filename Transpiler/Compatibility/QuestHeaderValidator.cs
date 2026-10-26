@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Mono.Cecil;
 
 namespace Transpiler;
 
@@ -32,5 +33,32 @@ internal static class QuestHeaderValidator
             if (File.Exists(Path.Combine(includeRoot, relativeHeader.Replace('/', Path.DirectorySeparatorChar))))
                 requiredHeaders.Add(relativeHeader);
         }
+    }
+
+    public static void AddQuestTypeHeader(TypeReference pcType, string includeRoot, ISet<string> requiredHeaders, string? generatedAssemblyName = null)
+    {
+        if (generatedAssemblyName is not null && pcType.Resolve()?.Module.Assembly.Name.Name == generatedAssemblyName)
+        {
+            var namespacePath = string.IsNullOrWhiteSpace(pcType.Namespace) ? "GlobalNamespace" : pcType.Namespace.Replace('.', '/');
+            var typeParts = new Stack<string>();
+            for (TypeReference? current = pcType; current is not null; current = current.DeclaringType)
+                typeParts.Push(current.Name.Split('`')[0]);
+            var typeName = string.Join("_", typeParts);
+            requiredHeaders.Add($"{namespacePath}/{typeName}.hpp");
+            return;
+        }
+        var questType = QuestApiTypeMapper.Map(pcType);
+        if (questType is null || !questType.Contains("::", StringComparison.Ordinal))
+            return;
+
+        var nativeType = questType.TrimStart(':');
+        var templateStart = nativeType.IndexOf('<');
+        if (templateStart >= 0)
+            nativeType = nativeType[..templateStart];
+        nativeType = nativeType.TrimEnd('*').TrimEnd(':');
+        var relativeHeader = nativeType.Replace("::", "/", StringComparison.Ordinal) + ".hpp";
+        if (!File.Exists(Path.Combine(includeRoot, relativeHeader.Replace('/', Path.DirectorySeparatorChar))))
+            throw new InvalidOperationException($"Quest type '{pcType.FullName}' maps to '{questType}', but no Quest declaration header exists at '{relativeHeader}'. The type must be ported or explicitly mapped before this patch can be emitted.");
+        requiredHeaders.Add(relativeHeader);
     }
 }

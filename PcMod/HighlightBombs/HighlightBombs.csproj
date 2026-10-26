@@ -1,0 +1,60 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net48</TargetFramework>
+        <AssemblyName>HighlightBombs</AssemblyName>
+        <RootNamespace>HighlightBombs</RootNamespace>
+        <LangVersion>12.0</LangVersion>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>disable</ImplicitUsings>
+        <PlatformTarget>x64</PlatformTarget>
+        <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+        <DeployToGame Condition="'$(DeployToGame)' == ''">false</DeployToGame>
+        <NoWarn>$(NoWarn);CS8618;CS0649</NoWarn>
+    </PropertyGroup>
+    <ItemGroup>
+        <Reference Include="0Harmony">
+            <HintPath>$(GameDir)\IPA\Libs\0Harmony.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="Main">
+            <HintPath>$(GameDir)\Beat Saber_Data\Managed\Main.dll</HintPath>
+            <Private>false</Private>
+            <Publicize>true</Publicize>
+        </Reference>
+        <Reference Include="IPA.Loader">
+            <HintPath>$(GameDir)\Beat Saber_Data\Managed\IPA.Loader.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="BGLib.UnityExtension">
+            <HintPath>$(GameDir)\Beat Saber_Data\Managed\BGLib.UnityExtension.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="SiraUtil">
+            <HintPath>$(GameDir)\Plugins\SiraUtil.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="Zenject">
+            <HintPath>$(GameDir)\Beat Saber_Data\Managed\Zenject.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="Zenject-usage">
+            <HintPath>$(GameDir)\Beat Saber_Data\Managed\Zenject-usage.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="UnityEngine.CoreModule">
+            <HintPath>$(GameDir)\Beat Saber_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="UnityEngine.AssetBundleModule">
+            <HintPath>$(GameDir)\Beat Saber_Data\Managed\UnityEngine.AssetBundleModule.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <EmbeddedResource Include="manifest.json" LogicalName="manifest.json" />
+        <EmbeddedResource Include="QuickOutline\QuickOutline\AssetBundles\outline" />
+        <PackageReference Include="BepInEx.AssemblyPublicizer.MSBuild" Version="0.4.2" PrivateAssets="all" />
+    </ItemGroup>
+    <Target Name="ValidateGameDirectory" BeforeTargets="ResolveReferences">
+        <Error Condition="!Exists('$(GameDir)\Beat Saber_Data\Managed\Main.dll')" Text="GameDir does not contain Beat Saber_Data\Managed\Main.dll: $(GameDir)" />
+        <Error Condition="!Exists('$(GameDir)\IPA\Libs\0Harmony.dll')" Text="GameDir does not contain IPA\Libs\0Harmony.dll: $(GameDir)" />
+    </Target>
+</Project>

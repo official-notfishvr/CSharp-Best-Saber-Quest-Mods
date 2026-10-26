@@ -64,7 +64,7 @@ internal sealed class MappingCatalog
 {
     private readonly List<ApiCallMapping> _apiCalls;
 
-    private MappingCatalog(CompatibilityProfile profile, List<ApiCallMapping> apiCalls)
+    internal MappingCatalog(CompatibilityProfile profile, List<ApiCallMapping> apiCalls)
     {
         Profile = profile;
         _apiCalls = apiCalls;
@@ -200,7 +200,10 @@ internal sealed class MappingCatalog
         if (definition is null)
             return null;
         var assembly = definition.Module.Assembly.Name.Name;
-        return _apiCalls.SingleOrDefault(mapping =>
+        var isFrameworkAssembly = assembly is "mscorlib" or "System" or "System.Core" or "netstandard" || assembly.StartsWith("System.", StringComparison.Ordinal);
+        if (!_apiCalls.Any(mapping => mapping.PcAssembly == assembly) && !Profile.PcAssemblies.Any(fingerprint => fingerprint.Name == assembly) && !isFrameworkAssembly)
+            return null;
+        var exact = _apiCalls.SingleOrDefault(mapping =>
             mapping.PcAssembly == assembly
             && mapping.PcType == definition.DeclaringType.FullName
             && mapping.PcMethod == definition.Name
@@ -208,6 +211,37 @@ internal sealed class MappingCatalog
             && mapping.PcReturn == definition.ReturnType.FullName
             && mapping.PcStatic == definition.IsStatic
             && mapping.PcParameters.SequenceEqual(definition.Parameters.Select(parameter => parameter.ParameterType.FullName))
+        );
+        if (exact is not null)
+            return exact;
+
+        // bs-cordl exposes many Unity generic methods directly in its generated
+        // declaration headers even when the inventory cannot form a closed
+        // structural candidate (for example T[] return values).
+        var questType = QuestApiTypeMapper.Map(method.DeclaringType)?.TrimEnd('*');
+        var questReturn = QuestApiTypeMapper.Map(definition.ReturnType);
+        var questParameters = definition.Parameters.Select(parameter => QuestApiTypeMapper.Map(parameter.ParameterType)).ToArray();
+        if (questType is null || questReturn is null || questParameters.Any(parameter => parameter is null))
+            return null;
+        var headerType = questType.Split('<')[0];
+        var publicHeader = headerType.TrimStart(':').Replace("::", "/", StringComparison.Ordinal) + ".hpp";
+        var declarationHeader = Path.Combine(Path.GetDirectoryName(publicHeader) ?? "", "zzzz__" + headerType.Split("::").Last() + "_def.hpp").Replace('\\', '/');
+        return new ApiCallMapping(
+            Profile.Id,
+            assembly,
+            definition.DeclaringType.FullName,
+            definition.Name,
+            definition.GenericParameters.Count,
+            definition.ReturnType.FullName,
+            definition.Parameters.Select(parameter => parameter.ParameterType.FullName).ToArray(),
+            definition.IsStatic,
+            questType.TrimStart(':'),
+            publicHeader,
+            declarationHeader,
+            definition.Name,
+            questReturn,
+            questParameters!,
+            definition.IsStatic
         );
     }
 

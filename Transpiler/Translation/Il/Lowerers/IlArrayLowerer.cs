@@ -12,12 +12,12 @@ internal static class IlArrayLowerer
         {
             case Code.Newarr:
             {
-                if (instruction.Operand is not TypeReference elementType || !TryCppArrayType(elementType.FullName, out _))
-                    throw Unsupported(context.Method, instruction, "only arrays of supported primitive values or strings can be allocated");
+                if (instruction.Operand is not TypeReference elementType || !TryCppArrayType(elementType, out var elementCppType))
+                    throw Unsupported(context.Method, instruction, "array element type has no Quest ArrayW representation");
                 var length = Pop(context, instruction, stack);
                 if (length.PcType is not ("System.Int32" or "System.UInt32" or "System.Int64" or "System.UInt64"))
                     throw Unsupported(context.Method, instruction, "array length must be an integer");
-                stack.Push(new QuestValue($"std::vector<{CppType(elementType.FullName)}> (static_cast<size_t>({length.Code}))", elementType.FullName + "[]", false));
+                stack.Push(new QuestValue($"::ArrayW<{elementCppType}, ::Array<{elementCppType}>*>(static_cast<size_t>({length.Code}))", elementType.FullName + "[]", false));
                 return true;
             }
             case Code.Ldlen:
@@ -36,7 +36,7 @@ internal static class IlArrayLowerer
                 var element = RequireArray(context, instruction, array);
                 RequireElement(context, instruction, element, addressType.FullName);
                 RequireIndex(context, instruction, index);
-                stack.Push(new QuestValue($"&({array.Code}.at(static_cast<size_t>({index.Code})))", element, false, array.ApiMapping ?? index.ApiMapping, IsByRef: true));
+                stack.Push(new QuestValue($"&({array.Code}[static_cast<size_t>({index.Code})])", element, false, array.ApiMapping ?? index.ApiMapping, IsByRef: true));
                 return true;
             }
             case Code.Ldelem_I1:
@@ -100,7 +100,28 @@ internal static class IlArrayLowerer
             cppType = "::StringW";
             return true;
         }
-        return TryCppType(type, out cppType);
+        if (TryCppType(type, out cppType))
+            return true;
+        if (type == "System.String")
+        {
+            cppType = "::StringW";
+            return true;
+        }
+        if (type.StartsWith("System.", StringComparison.Ordinal))
+        {
+            cppType = "";
+            return false;
+        }
+        cppType = "::" + string.Join("::", type.Split('.')) + "*";
+        return true;
+    }
+
+    private static bool TryCppArrayType(TypeReference type, out string cppType)
+    {
+        if (TryCppType(type.FullName, out cppType))
+            return true;
+        cppType = QuestApiTypeMapper.Map(type) ?? "";
+        return cppType.Length > 0;
     }
 
     private static void LowerLoad(IlTranslationContext context, Instruction instruction, Stack<QuestValue> stack)
@@ -109,26 +130,25 @@ internal static class IlArrayLowerer
         var array = Pop(context, instruction, stack);
         var element = RequireArray(context, instruction, array);
         var expected =
-            instruction.OpCode.Code == Code.Ldelem_Any
-                ? (instruction.Operand as TypeReference)?.FullName
-                : instruction.OpCode.Code == Code.Ldelem_Ref ? "System.String"
-                : instruction.OpCode.Code switch
-                {
-                    Code.Ldelem_I1 => "System.SByte",
-                    Code.Ldelem_U1 => "System.Byte",
-                    Code.Ldelem_I2 => "System.Int16",
-                    Code.Ldelem_U2 => "System.UInt16",
-                    Code.Ldelem_I4 => "System.Int32",
-                    Code.Ldelem_U4 => "System.UInt32",
-                    Code.Ldelem_I8 => "System.Int64",
-                    Code.Ldelem_I => "System.Int32",
-                    Code.Ldelem_R4 => "System.Single",
-                    Code.Ldelem_R8 => "System.Double",
-                    _ => null,
-                };
+            instruction.OpCode.Code == Code.Ldelem_Any ? (instruction.Operand as TypeReference)?.FullName
+            : instruction.OpCode.Code == Code.Ldelem_Ref ? element
+            : instruction.OpCode.Code switch
+            {
+                Code.Ldelem_I1 => "System.SByte",
+                Code.Ldelem_U1 => "System.Byte",
+                Code.Ldelem_I2 => "System.Int16",
+                Code.Ldelem_U2 => "System.UInt16",
+                Code.Ldelem_I4 => "System.Int32",
+                Code.Ldelem_U4 => "System.UInt32",
+                Code.Ldelem_I8 => "System.Int64",
+                Code.Ldelem_I => "System.Int32",
+                Code.Ldelem_R4 => "System.Single",
+                Code.Ldelem_R8 => "System.Double",
+                _ => null,
+            };
         RequireElement(context, instruction, element, expected, instruction.OpCode.Code is Code.Ldelem_I1 or Code.Ldelem_U1);
         RequireIndex(context, instruction, index);
-        stack.Push(new QuestValue($"({array.Code}).at(static_cast<size_t>({index.Code}))", element, false, array.ApiMapping ?? index.ApiMapping));
+        stack.Push(new QuestValue($"({array.Code})[static_cast<size_t>({index.Code})]", element, false, array.ApiMapping ?? index.ApiMapping));
     }
 
     private static void LowerStore(IlTranslationContext context, Instruction instruction, Stack<QuestValue> stack, out QuestLogStatement? statement)
@@ -139,36 +159,38 @@ internal static class IlArrayLowerer
         var array = Pop(context, instruction, stack);
         var element = RequireArray(context, instruction, array);
         var expected =
-            instruction.OpCode.Code == Code.Stelem_Any
-                ? (instruction.Operand as TypeReference)?.FullName
-                : instruction.OpCode.Code == Code.Stelem_Ref ? "System.String"
-                : instruction.OpCode.Code switch
-                {
-                    Code.Stelem_I1 => "System.SByte",
-                    Code.Stelem_I2 => "System.Int16",
-                    Code.Stelem_I4 => "System.Int32",
-                    Code.Stelem_I8 => "System.Int64",
-                    Code.Stelem_I => "System.Int32",
-                    Code.Stelem_R4 => "System.Single",
-                    Code.Stelem_R8 => "System.Double",
-                    _ => null,
-                };
+            instruction.OpCode.Code == Code.Stelem_Any ? (instruction.Operand as TypeReference)?.FullName
+            : instruction.OpCode.Code == Code.Stelem_Ref ? "System.String"
+            : instruction.OpCode.Code switch
+            {
+                Code.Stelem_I1 => "System.SByte",
+                Code.Stelem_I2 => "System.Int16",
+                Code.Stelem_I4 => "System.Int32",
+                Code.Stelem_I8 => "System.Int64",
+                Code.Stelem_I => "System.Int32",
+                Code.Stelem_R4 => "System.Single",
+                Code.Stelem_R8 => "System.Double",
+                _ => null,
+            };
         RequireElement(context, instruction, element, expected, instruction.OpCode.Code == Code.Stelem_I1);
         RequireIndex(context, instruction, index);
         var isStringNull = element == "System.String" && value.PcType == "System.Object" && value.Code == "nullptr" && !value.IsByRef;
         if ((value.PcType != element && !isStringNull) || value.IsByRef)
             throw Unsupported(context.Method, instruction, "stored value does not exactly match the array element type");
-        var valueCode = isStringNull ? "::StringW{}" : value.PcType == "System.String" && value.IsStringLiteral ? StringLiteral(value.Code) : value.Code;
-        statement = Raw($"({array.Code}).at(static_cast<size_t>({index.Code})) = {valueCode};", "IL array assignment", value.ApiMapping ?? array.ApiMapping);
+        var valueCode =
+            isStringNull ? "::StringW{}"
+            : value.PcType == "System.String" && value.IsStringLiteral ? StringLiteral(value.Code)
+            : value.Code;
+        statement = Raw($"({array.Code})[static_cast<size_t>({index.Code})] = {valueCode};", "IL array assignment", value.ApiMapping ?? array.ApiMapping);
     }
 
     private static string RequireArray(IlTranslationContext context, Instruction instruction, QuestValue array)
     {
         if (array.IsByRef || !array.PcType.EndsWith("[]", StringComparison.Ordinal))
-            throw Unsupported(context.Method, instruction, "array opcode requires a supported primitive array");
+            throw Unsupported(context.Method, instruction, "array opcode requires a one-dimensional managed array");
         var elementName = array.PcType[..^2];
         if (!TryCppArrayType(elementName, out _))
-            throw Unsupported(context.Method, instruction, "managed reference arrays are unsupported");
+            throw Unsupported(context.Method, instruction, "array element type has no Quest representation");
         return elementName;
     }
 
@@ -176,7 +198,7 @@ internal static class IlArrayLowerer
     {
         var compatible = expected == element || (allowBooleanStorage && element == "System.Boolean" && expected is "System.Byte" or "System.SByte");
         if (expected is null || !TryCppArrayType(expected, out _) || !compatible)
-            throw Unsupported(context.Method, instruction, "array opcode type does not exactly match the primitive array element type");
+            throw Unsupported(context.Method, instruction, "array opcode type does not exactly match its declared element type");
     }
 
     private static void RequireIndex(IlTranslationContext context, Instruction instruction, QuestValue index)

@@ -14,9 +14,7 @@ internal static partial class QuestTranspilationWorkflow
             
             dotnet .\Transpiler\bin\Release\net8.0\Transpiler.dll quest 1.40.8 .\PcMod\PauseKey\bin\Release\net48\PauseKey.dll 'C:\Users\Administrator\BSManager\BSInstances\1.40.8\Beat Saber_Data\Managed' .\Old\quest-mod\extern\includes\bs-cordl\include .\Old\quest-mod .\GeneratedQuest\PauseKey
         
-            dotnet .\Transpiler\bin\Release\net8.0\Transpiler.dll quest 1.40.8 .\PcMod\SongCoreInterop\bin\Release\net48\SongCoreInterop.dll 'C:\Users\Administrator\BSManager\BSInstances\1.40.8\Beat Saber_Data\Managed' .\Old\quest-mod\extern\includes\bs-cordl\include .\Old\quest-mod .\GeneratedQuest\SongCoreInterop
-        
-            dotnet .\Transpiler\bin\Release\net8.0\Transpiler.dll quest 1.40.8 .\PcMod\BombOutliner\bin\Release\net48\BombOutliner.dll 'C:\Users\Administrator\BSManager\BSInstances\1.40.8\Beat Saber_Data\Managed' .\Old\quest-mod\extern\includes\bs-cordl\include .\Old\quest-mod .\GeneratedQuest\BombOutliner
+            dotnet .\Transpiler\bin\Release\net8.0\Transpiler.dll quest 1.40.8 .\PcMod\HighlightBombs\bin\Release\net48\HighlightBombs.dll 'C:\Users\Administrator\BSManager\BSInstances\1.40.8\Beat Saber_Data\Managed' .\Old\quest-mod\extern\includes\bs-cordl\include .\Old\quest-mod .\GeneratedQuest\HighlightBombs
         
         */
 
@@ -145,6 +143,18 @@ internal static partial class QuestTranspilationWorkflow
                     }
                     QuestHeaderValidator.ValidateQuestHeader(mapping, headers);
                     QuestHeaderValidator.AddMappedTypeHeaders(mapping, headers, requiredApiHeaders);
+                    foreach (
+                        var referencedType in patch.Method.Body.Instructions.SelectMany(instruction =>
+                        {
+                            var types = new List<TypeReference>();
+                            if (instruction.Operand is TypeReference typeOperand)
+                                types.Add(typeOperand);
+                            if (instruction.Operand is GenericInstanceMethod genericMethod)
+                                types.AddRange(genericMethod.GenericArguments);
+                            return types;
+                        })
+                    )
+                        QuestHeaderValidator.AddQuestTypeHeader(referencedType, headers, requiredApiHeaders, assembly.Name.Name);
                     var callMappings = patch
                         .Method.Body.Instructions.Where(instruction => instruction.OpCode.Code is Mono.Cecil.Cil.Code.Call or Mono.Cecil.Cil.Code.Callvirt)
                         .Select(instruction => catalog.ResolveApiCall((MethodReference)instruction.Operand))
@@ -219,17 +229,58 @@ internal static partial class QuestTranspilationWorkflow
                 questConfigFields[field.Name] = field;
             }
 
+            var localTypeReferences = patches
+                .SelectMany(patch => patch.Method.Body.Instructions)
+                .SelectMany(instruction =>
+                    instruction.Operand switch
+                    {
+                        TypeReference type => new[] { type },
+                        GenericInstanceMethod generic => generic.GenericArguments.ToArray(),
+                        _ => Array.Empty<TypeReference>(),
+                    }
+                )
+                .Where(type =>
+                {
+                    try
+                    {
+                        return type.Resolve()?.Module.Assembly.Name.Name == assembly.Name.Name;
+                    }
+                    catch (ResolutionException)
+                    {
+                        return false;
+                    }
+                })
+                .ToArray();
+            IReadOnlyList<GeneratedModType> generatedTypes;
+            try
+            {
+                generatedTypes = GeneratedModTypeEmitter.Emit(localTypeReferences, assembly, catalog, headers);
+            }
+            catch (InvalidOperationException ex)
+            {
+                unsupportedOperations.Add("Generated mod type: " + ex.Message);
+                generatedTypes = Array.Empty<GeneratedModType>();
+            }
             if (unsupportedOperations.Count > 0)
                 throw new InvalidOperationException($"Quest generation refused to emit a partial mod. Unsupported operations remain:\n - {string.Join("\n - ", unsupportedOperations.Distinct(StringComparer.Ordinal))}");
 
             CopyTemplate(template, output);
+            foreach (var generatedType in generatedTypes)
+            {
+                var headerPath = Path.Combine(output, "include", generatedType.HeaderPath.Replace('/', Path.DirectorySeparatorChar));
+                var sourcePath = Path.Combine(output, "src", Path.ChangeExtension(generatedType.HeaderPath, ".cpp").Replace('/', Path.DirectorySeparatorChar));
+                Directory.CreateDirectory(Path.GetDirectoryName(headerPath)!);
+                Directory.CreateDirectory(Path.GetDirectoryName(sourcePath)!);
+                File.WriteAllText(headerPath, generatedType.Header);
+                File.WriteAllText(sourcePath, generatedType.Source);
+            }
             SelectQuestDependencies(Path.Combine(output, "qpm.json"), Path.Combine(output, "qpm.shared.json"), questConfigFields.Count > 0, requiredQuestPackages);
             if (bsmlMenus.Count > 0)
                 AddBsmlIncludeDirectory(Path.Combine(output, "CMakeLists.txt"));
             if (questConfigFields.Count > 0)
                 File.WriteAllText(Path.Combine(output, "include", "TranspiledModConfig.hpp"), GenerateConfigHeader(questConfigFields.Values));
             UpdateLoggerContext(Path.Combine(output, "include", "main.hpp"), metadata.Id);
-            var requiredHeaders = resolvedMappings.Select(m => m.PublicHeader).Concat(requiredApiHeaders).Distinct(StringComparer.Ordinal);
+            var requiredHeaders = resolvedMappings.Select(m => m.PublicHeader).Concat(requiredApiHeaders).Concat(generatedTypes.Select(type => type.HeaderPath)).Distinct(StringComparer.Ordinal);
             File.WriteAllText(
                 Path.Combine(output, "src", "main.cpp"),
                 GenerateSource(string.Join("\n\n", generatedHooks), hookNames, requiredHeaders.Concat(bsmlOutput.Includes), metadata, questConfigFields.Count > 0, questStaticFields.Values, bsmlOutput.SupportCode, bsmlOutput.StartupLines, bsmlMenus.Count, lifecycle.NeedsUnload)

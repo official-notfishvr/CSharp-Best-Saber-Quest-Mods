@@ -5,25 +5,53 @@ namespace Transpiler;
 
 internal sealed class IlTranslationContext
 {
-    public IlTranslationContext(MethodDefinition method, MappingCatalog catalog, IReadOnlyDictionary<int, QuestValue> arguments, string nativeReturnType, HashSet<string>? activeLocalMethods = null)
+    public IlTranslationContext(MethodDefinition method, MappingCatalog catalog, IReadOnlyDictionary<int, QuestValue> arguments, string nativeReturnType, HashSet<string>? activeLocalMethods = null, IReadOnlyDictionary<int, TypeReference>? genericArguments = null)
     {
         Method = method;
         Catalog = catalog;
         Arguments = arguments;
         NativeReturnType = nativeReturnType;
         ActiveLocalMethods = activeLocalMethods ?? new HashSet<string>(StringComparer.Ordinal);
+        GenericArguments = genericArguments ?? new Dictionary<int, TypeReference>();
+        RegisterKnownType(method.DeclaringType);
+        RegisterKnownType(method.ReturnType);
+        foreach (var parameter in method.Parameters)
+            RegisterKnownType(parameter.ParameterType);
+        foreach (var variable in method.Body.Variables)
+            RegisterKnownType(variable.VariableType);
+        foreach (var argument in GenericArguments.Values)
+            RegisterKnownType(argument);
+        foreach (var instruction in method.Body.Instructions)
+        {
+            if (instruction.Operand is TypeReference operandType)
+                RegisterKnownType(operandType);
+            else if (instruction.Operand is FieldReference fieldReference)
+            {
+                RegisterKnownType(fieldReference.DeclaringType);
+                RegisterKnownType(fieldReference.FieldType);
+            }
+            else if (instruction.Operand is MethodReference methodReference)
+            {
+                RegisterKnownType(methodReference.DeclaringType);
+                RegisterKnownType(methodReference.ReturnType);
+                foreach (var parameter in methodReference.Parameters)
+                    RegisterKnownType(parameter.ParameterType);
+            }
+        }
         for (var i = 0; i < method.Body.Variables.Count; i++)
-            Locals[i] = new QuestValue($"il_local_{i}", method.Body.Variables[i].VariableType.FullName, false);
+            Locals[i] = new QuestValue($"il_local_{i}", ResolveType(method.Body.Variables[i].VariableType).FullName, false);
         InstructionIndexes = method.Body.Instructions.Select((instruction, index) => (instruction, index)).ToDictionary(pair => pair.instruction, pair => pair.index);
         foreach (var instruction in method.Body.Instructions.Where(instruction => instruction.OpCode.Code is Code.Ldsfld or Code.Stsfld or Code.Ldsflda))
         {
             var fieldReference = (FieldReference)instruction.Operand;
             var field = fieldReference.Resolve() ?? throw new InvalidOperationException($"Could not resolve static field {fieldReference.FullName} in {method.FullName}.");
-            if (!field.IsStatic || field.Module != method.Module || !IsPrimitive(field.FieldType.FullName))
-                throw new InvalidOperationException($"Static field {fieldReference.FullName} in {method.FullName} is outside the supported primitive mod-field subset.");
+            if (IsCompilerDelegateCache(field))
+                continue;
+            if (!field.IsStatic || field.Module != method.Module || field.DeclaringType.Module != method.Module || QuestApiTypeMapper.Map(field.FieldType) is null)
+                throw new InvalidOperationException($"Static field {fieldReference.FullName} in {method.FullName} has no generated Quest field representation.");
             var name = "il_static_" + new string((field.DeclaringType.FullName + "_" + field.Name).Select(character => char.IsLetterOrDigit(character) ? character : '_').ToArray());
             var initialValue = field.HasConstant ? Constant(field.Constant, field.FieldType.FullName) : FindInitializer(method.Module, field);
-            if (field.IsPublic && !field.IsInitOnly)
+            if (field.IsPublic && !field.IsInitOnly && IsPrimitive(field.FieldType.FullName))
             {
                 var configName = new string((field.DeclaringType.Name + "_" + field.Name).Select(character => char.IsLetterOrDigit(character) ? character : '_').ToArray());
                 var config = new QuestConfigField(configName, CppType(field.FieldType.FullName), field.Name, initialValue ?? DefaultValue(field.FieldType.FullName));
@@ -33,9 +61,9 @@ internal sealed class IlTranslationContext
             }
             StaticFields[field.FullName] = new QuestValue(name, field.FieldType.FullName, false);
             if (initialValue is not null)
-                StaticFieldDeclarations[name] = $"static {CppType(field.FieldType.FullName)} {name} = {initialValue};";
+                StaticFieldDeclarations[name] = $"{(IsPrimitive(field.FieldType.FullName) ? CppType(field.FieldType.FullName) : QuestApiTypeMapper.Map(field.FieldType))} {name} = {initialValue};";
             else
-                StaticFieldDeclarations[name] = $"static {CppType(field.FieldType.FullName)} {name}{{}};";
+                StaticFieldDeclarations[name] = $"{(IsPrimitive(field.FieldType.FullName) ? CppType(field.FieldType.FullName) : QuestApiTypeMapper.Map(field.FieldType))} {name}{{}};";
         }
     }
 
@@ -43,6 +71,9 @@ internal sealed class IlTranslationContext
     public MappingCatalog Catalog { get; }
     public string NativeReturnType { get; }
     public HashSet<string> ActiveLocalMethods { get; }
+    public IReadOnlyDictionary<int, TypeReference> GenericArguments { get; }
+    private readonly Dictionary<string, TypeReference> KnownTypes = new(StringComparer.Ordinal);
+    public TypeReference EffectiveReturnType => ResolveType(Method.ReturnType);
     public int TemporaryIndex { get; set; }
     public IReadOnlyDictionary<int, QuestValue> Arguments { get; }
     public Dictionary<int, QuestValue> Locals { get; } = new();
@@ -51,6 +82,51 @@ internal sealed class IlTranslationContext
     public Dictionary<string, QuestConfigField> ConfigFields { get; } = new(StringComparer.Ordinal);
     public IReadOnlyDictionary<Instruction, int> InstructionIndexes { get; }
     public Mono.Collections.Generic.Collection<Instruction> Instructions => Method.Body.Instructions;
+
+    public TypeReference ResolveType(TypeReference type)
+    {
+        if (type is GenericParameter parameter && parameter.Type == GenericParameterType.Method && GenericArguments.TryGetValue(parameter.Position, out var argument))
+            return argument;
+        if (type is ArrayType array)
+        {
+            var elementType = ResolveType(array.ElementType);
+            return array.IsVector ? new ArrayType(elementType) : new ArrayType(elementType, array.Rank);
+        }
+        if (type is ByReferenceType byReference)
+            return new ByReferenceType(ResolveType(byReference.ElementType));
+        if (type is PointerType pointer)
+            return new PointerType(ResolveType(pointer.ElementType));
+        if (type is GenericInstanceType generic)
+        {
+            var instance = new GenericInstanceType(generic.ElementType);
+            foreach (var argumentType in generic.GenericArguments)
+                instance.GenericArguments.Add(ResolveType(argumentType));
+            return instance;
+        }
+        return type;
+    }
+
+    public TypeReference? FindKnownType(string fullName) => KnownTypes.GetValueOrDefault(fullName);
+
+    private void RegisterKnownType(TypeReference type)
+    {
+        if (type is GenericInstanceType generic)
+        {
+            KnownTypes[generic.FullName] = generic;
+            RegisterKnownType(generic.ElementType);
+            foreach (var argument in generic.GenericArguments)
+                RegisterKnownType(argument);
+        }
+        else if (type is TypeSpecification specification)
+        {
+            KnownTypes[type.FullName] = type;
+            RegisterKnownType(specification.ElementType);
+        }
+        else
+            KnownTypes[type.FullName] = type;
+    }
+
+    internal static bool IsCompilerDelegateCache(FieldDefinition field) => field.IsStatic && field.DeclaringType.Name.Contains("<>c", StringComparison.Ordinal) && (field.Name.StartsWith("<>9__", StringComparison.Ordinal) || field.Name == "<>9");
 
     private static bool IsPrimitive(string type) => type is "System.Boolean" or "System.Byte" or "System.SByte" or "System.Int16" or "System.UInt16" or "System.Int32" or "System.UInt32" or "System.Int64" or "System.UInt64" or "System.Single" or "System.Double";
 

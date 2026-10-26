@@ -74,7 +74,7 @@ internal static class QuestApiTypeMapper
         {
             if (current.Name.Contains('`'))
                 return null;
-            nestedNames.Push(current.Name);
+            nestedNames.Push(CppIdentifier(current.Name));
             current = current.DeclaringType;
         }
         var cppName = string.Join("_", nestedNames);
@@ -129,10 +129,12 @@ internal static class QuestApiTypeMapper
                     nestedNames.Push($"{baseName}_{arity}");
                 continue;
             }
-            nestedNames.Push(current.Name);
+            nestedNames.Push(CppIdentifier(current.Name));
             current = current.DeclaringType;
         }
         var cppName = string.Join("_", nestedNames);
         return $"::{cppNamespace}::{cppName}<{string.Join(", ", arguments)}>{(resolved.IsValueType ? "" : "*")}";
     }
+
+    private static string CppIdentifier(string value) => System.Text.RegularExpressions.Regex.Replace(value, "[^A-Za-z0-9_]", "_");
 }

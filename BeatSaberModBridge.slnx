@@ -1,5 +1,6 @@
 <Solution>
     <Folder Name="/PcMod/">
+        <Project Path="PcMod/HighlightBombs/HighlightBombs.csproj" />
         <Project Path="PcMod/SampleMod/SampleMod.csproj" />
         <Project Path="PcMod/PauseKey/PauseKey.csproj" />
     </Folder>

@@ -5,6 +5,20 @@ namespace Transpiler;
 
 internal static class IlMethodTranslator
 {
+    public static IReadOnlyList<QuestLogStatement> TranslateModTypeMethod(MethodDefinition method, MappingCatalog catalog)
+    {
+        if (method.IsStatic || !method.HasBody || method.IsGetter || method.IsSetter)
+            throw new InvalidOperationException($"Unsupported generated type method shape: {method.FullName}.");
+        var arguments = new Dictionary<int, QuestValue> { [0] = new QuestValue("this", method.DeclaringType.FullName, false) };
+        for (var i = 0; i < method.Parameters.Count; i++)
+            arguments[i + 1] = new QuestValue(CppIdentifierForArgument(method.Parameters[i], i), method.Parameters[i].ParameterType.FullName, false);
+        var nativeReturn = QuestApiTypeMapper.Map(method.ReturnType) ?? throw new InvalidOperationException($"No Quest representation for return type {method.ReturnType.FullName} in {method.FullName}.");
+        var context = new IlTranslationContext(method, catalog, arguments, nativeReturn);
+        return IlControlFlowLowerer.LowerRange(context, 0, method.Body.Instructions.Count, includeLocalDeclarations: true);
+    }
+
+    private static string CppIdentifierForArgument(ParameterDefinition parameter, int index) => System.Text.RegularExpressions.Regex.Replace(parameter.Name, "[^A-Za-z0-9_]", "_") is { Length: > 0 } name ? name : "arg" + index;
+
     public static IReadOnlyList<QuestLogStatement> TranslateBsmlAction(MethodDefinition method, MappingCatalog catalog)
     {
         if (method.IsStatic || method.ReturnType.MetadataType != MetadataType.Void || !method.HasBody || method.Parameters.Count != 0)
