@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/bsmg/BSIPA-MetadataFileSchema/master/Schema.json",
+  "id": "SampleMod",
+  "name": "SampleMod",
+  "author": "CSharp-Best-Saber-Quest-Mods",
+  "version": "0.1.0",
+  "description": "PC-first sample plugin for the cross-platform mod toolchain.",
+  "gameVersion": "1.40.8",
+  "dependsOn": {
+    "BSIPA": "^4.3.6"
+  }
+}

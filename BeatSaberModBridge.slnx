@@ -1,0 +1,7 @@
+<Solution>
+    <Folder Name="/PcMod/">
+        <Project Path="PcMod/SampleMod/SampleMod.csproj" />
+        <Project Path="PcMod/PauseKey/PauseKey.csproj" />
+    </Folder>
+    <Project Path="Transpiler/Transpiler.csproj" />
+</Solution>

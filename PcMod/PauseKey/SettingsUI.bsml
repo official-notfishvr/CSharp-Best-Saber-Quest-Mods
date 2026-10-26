@@ -1,0 +1,4 @@
+<vertical spacing="2" pad-top="4">
+  <text text="Choose which controller input opens the pause menu." />
+  <dropdown-list-setting text="Pause input" value="pause-input-value" choices="pause-input-choices" apply-on-change="true" bind-value="true" />
+</vertical>

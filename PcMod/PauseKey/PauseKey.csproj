@@ -1,0 +1,70 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net48</TargetFramework>
+        <AssemblyName>PauseKey</AssemblyName>
+        <RootNamespace>PauseKey</RootNamespace>
+        <LangVersion>12.0</LangVersion>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>disable</ImplicitUsings>
+        <PlatformTarget>x64</PlatformTarget>
+        <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+        <DeployToGame Condition="'$(DeployToGame)' == ''">false</DeployToGame>
+    </PropertyGroup>
+    <ItemGroup>
+        <Reference Include="IPA.Loader">
+            <HintPath>$(GameDir)\IPA\Data\Managed\IPA.Loader.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="0Harmony">
+            <HintPath>$(GameDir)\IPA\Libs\0Harmony.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="Main">
+            <HintPath>$(GameDir)\Beat Saber_Data\Managed\Main.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="Core">
+            <HintPath>$(GameDir)\Beat Saber_Data\Managed\Core.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="GameplayCore">
+            <HintPath>$(GameDir)\Beat Saber_Data\Managed\GameplayCore.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="HMUI">
+            <HintPath>$(GameDir)\Beat Saber_Data\Managed\HMUI.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="BeatSaber.ViewSystem">
+            <HintPath>$(GameDir)\Beat Saber_Data\Managed\BeatSaber.ViewSystem.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="HMLib">
+            <HintPath>$(GameDir)\Beat Saber_Data\Managed\HMLib.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="UnityEngine.CoreModule">
+            <HintPath>$(GameDir)\Beat Saber_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="UnityEngine.XRModule">
+            <HintPath>$(GameDir)\Beat Saber_Data\Managed\UnityEngine.XRModule.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="BSML">
+            <HintPath>$(GameDir)\Plugins\BSML.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <EmbeddedResource Include="manifest.json" LogicalName="manifest.json" />
+        <EmbeddedResource Include="SettingsUI.bsml" LogicalName="PauseKey.SettingsUI.bsml" />
+    </ItemGroup>
+    <Target Name="ValidateGameDirectory" BeforeTargets="ResolveReferences">
+        <Error Condition="!Exists('$(GameDir)\Beat Saber_Data\Managed\Main.dll')" Text="GameDir does not contain Beat Saber_Data\Managed\Main.dll: $(GameDir)" />
+        <Error Condition="!Exists('$(GameDir)\IPA\Data\Managed\IPA.Loader.dll')" Text="GameDir does not contain IPA\Data\Managed\IPA.Loader.dll: $(GameDir)" />
+        <Error Condition="!Exists('$(GameDir)\IPA\Libs\0Harmony.dll')" Text="GameDir does not contain IPA\Libs\0Harmony.dll: $(GameDir)" />
+    </Target>
+    <Target Name="DeployToBeatSaberPlugins" AfterTargets="Build" Condition="'$(DeployToGame)' == 'true'">
+        <MakeDir Directories="$(GameDir)\Plugins" />
+        <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(GameDir)\Plugins" />
+    </Target>
+</Project>

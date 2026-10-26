@@ -1,0 +1,6 @@
+<Project>
+    <PropertyGroup>
+        <GameDir Condition="'$(GameDir)' == '' and '$(BEATSABER_DIR)' != ''">$(BEATSABER_DIR)</GameDir>
+        <GameDir Condition="'$(GameDir)' == ''">C:\Users\Administrator\BSManager\BSInstances\1.40.8</GameDir>
+    </PropertyGroup>
+</Project>
