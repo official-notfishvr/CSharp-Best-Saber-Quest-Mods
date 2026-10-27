@@ -45,6 +45,8 @@ internal static partial class QuestTranspilationWorkflow
             using var assemblyResolver = PcAssemblyResolver.Create(pcManaged, assemblyPath);
             using var assembly = AssemblyDefinition.ReadAssembly(assemblyPath, new ReaderParameters { AssemblyResolver = assemblyResolver, ReadSymbols = false });
             var metadata = ReadModMetadata(assembly);
+            var embeddedAssetBundles = EmbeddedAssetBundleBootstrapper.Discover(assembly, metadata.Id);
+            var zenjectBootstrap = ZenjectBootstrapLowerer.Lower(assembly, embeddedAssetBundles);
             var gameDataDirectory = Directory.GetParent(pcManaged)?.FullName;
             var pcGameRoot = gameDataDirectory is null ? null : Directory.GetParent(gameDataDirectory)?.FullName;
             if (pcGameRoot is null)
@@ -115,6 +117,7 @@ internal static partial class QuestTranspilationWorkflow
 
             var translatedPatches = new List<TranslatedHarmonyPatch>();
             var unsupportedOperations = new List<string>(patchDiscovery.Unsupported.Concat(bsmlResult.Unsupported));
+            unsupportedOperations.AddRange(zenjectBootstrap.Unsupported);
             var mappingReport = new List<object>();
             var resolvedMappings = new List<TargetMapping>();
             var requiredApiHeaders = new HashSet<string>(StringComparer.Ordinal);
@@ -265,6 +268,9 @@ internal static partial class QuestTranspilationWorkflow
                 throw new InvalidOperationException($"Quest generation refused to emit a partial mod. Unsupported operations remain:\n - {string.Join("\n - ", unsupportedOperations.Distinct(StringComparer.Ordinal))}");
 
             CopyTemplate(template, output);
+            WriteEmbeddedAssetBundles(output, embeddedAssetBundles);
+            if (embeddedAssetBundles.Bundles.Count > 0)
+                AddFileCopyPackaging(output);
             foreach (var generatedType in generatedTypes)
             {
                 var headerPath = Path.Combine(output, "include", generatedType.HeaderPath.Replace('/', Path.DirectorySeparatorChar));
@@ -283,12 +289,25 @@ internal static partial class QuestTranspilationWorkflow
             var requiredHeaders = resolvedMappings.Select(m => m.PublicHeader).Concat(requiredApiHeaders).Concat(generatedTypes.Select(type => type.HeaderPath)).Distinct(StringComparer.Ordinal);
             File.WriteAllText(
                 Path.Combine(output, "src", "main.cpp"),
-                GenerateSource(string.Join("\n\n", generatedHooks), hookNames, requiredHeaders.Concat(bsmlOutput.Includes), metadata, questConfigFields.Count > 0, questStaticFields.Values, bsmlOutput.SupportCode, bsmlOutput.StartupLines, bsmlMenus.Count, lifecycle.NeedsUnload)
+                GenerateSource(
+                    string.Join("\n\n", generatedHooks),
+                    hookNames,
+                    requiredHeaders.Concat(bsmlOutput.Includes).Concat(embeddedAssetBundles.Includes),
+                    metadata,
+                    questConfigFields.Count > 0,
+                    questStaticFields.Values,
+                    string.Join("\n", embeddedAssetBundles.SupportCode.Concat(new[] { bsmlOutput.SupportCode }.Where(value => !string.IsNullOrWhiteSpace(value)))),
+                    zenjectBootstrap.StartupComments.Concat(embeddedAssetBundles.StartupLines).Concat(bsmlOutput.StartupLines),
+                    bsmlMenus.Count,
+                    lifecycle.NeedsUnload
+                )
             );
             UpdateProjectMetadata(Path.Combine(output, "qpm.json"), metadata);
             UpdateProjectMetadata(Path.Combine(output, "mod.template.json"), metadata);
             UpdateQmodManifest(Path.Combine(output, "mod.json"), metadata);
             UpdateQmodManifest(Path.Combine(output, "mod.template.json"), metadata);
+            AddEmbeddedAssetFileCopies(Path.Combine(output, "mod.json"), embeddedAssetBundles);
+            AddEmbeddedAssetFileCopies(Path.Combine(output, "mod.template.json"), embeddedAssetBundles);
             var report = new
             {
                 schemaVersion = 2,
@@ -307,6 +326,15 @@ internal static partial class QuestTranspilationWorkflow
                     unsupported = lifecycle.Operations.Where(operation => operation.Status == "unsupported"),
                     approximations = lifecycle.Operations.Where(operation => operation.Status == "approximated"),
                 },
+                embeddedAssetBundles = embeddedAssetBundles.Bundles.Select(bundle => new
+                {
+                    resource = bundle.ResourceName,
+                    packagePath = bundle.PackagePath,
+                    devicePath = bundle.DevicePath,
+                    asset = bundle.AssetName,
+                    targetField = bundle.TargetField.FullName,
+                }),
+                zenjectInstallers = zenjectBootstrap.Installers,
                 unsupported = unsupportedOperations,
                 patches = mappingReport,
             };

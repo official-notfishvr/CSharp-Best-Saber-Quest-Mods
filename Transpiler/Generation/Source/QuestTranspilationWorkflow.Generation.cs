@@ -91,7 +91,7 @@ internal static partial class QuestTranspilationWorkflow
 
         MOD_EXTERN_FUNC void late_load() noexcept {
             il2cpp_functions::Init();
-        {{(usesQuestConfig ? "    ConfigUtils::ConfigParent<ModConfig_t>::Init(modInfo);\n" : "")}}{{string.Join("\n", (startupLines ?? Array.Empty<string>()).Select(line => "    " + line + "\n"))}}{{string.Join("\n", hookNames.Select(name => "    INSTALL_HOOK(PaperLogger, " + name + ");"))}}
+        {{(usesQuestConfig ? "    ConfigUtils::ConfigParent<ModConfig_t>::Init(modInfo);\n" : "")}}{{string.Join("", (startupLines ?? Array.Empty<string>()).Select(line => "    " + line + "\n"))}}{{string.Join("\n", hookNames.Select(name => "    INSTALL_HOOK(PaperLogger, " + name + ");"))}}
         }
         {{(
             hasUnload

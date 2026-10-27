@@ -49,7 +49,7 @@ internal sealed class IlTranslationContext
                 continue;
             if (!field.IsStatic || field.Module != method.Module || field.DeclaringType.Module != method.Module || QuestApiTypeMapper.Map(field.FieldType) is null)
                 throw new InvalidOperationException($"Static field {fieldReference.FullName} in {method.FullName} has no generated Quest field representation.");
-            var name = "il_static_" + new string((field.DeclaringType.FullName + "_" + field.Name).Select(character => char.IsLetterOrDigit(character) ? character : '_').ToArray());
+            var name = StaticFieldName(field);
             var initialValue = field.HasConstant ? Constant(field.Constant, field.FieldType.FullName) : FindInitializer(method.Module, field);
             if (field.IsPublic && !field.IsInitOnly && IsPrimitive(field.FieldType.FullName))
             {
@@ -60,6 +60,8 @@ internal sealed class IlTranslationContext
                 continue;
             }
             StaticFields[field.FullName] = new QuestValue(name, field.FieldType.FullName, false);
+            if (!IsPrimitive(field.FieldType.FullName) && FindReferenceInitializer(method.Module, field) is { } referenceInitializer)
+                StaticFieldInitializers[field.FullName] = referenceInitializer;
             if (initialValue is not null)
                 StaticFieldDeclarations[name] = $"{(IsPrimitive(field.FieldType.FullName) ? CppType(field.FieldType.FullName) : QuestApiTypeMapper.Map(field.FieldType))} {name} = {initialValue};";
             else
@@ -79,9 +81,12 @@ internal sealed class IlTranslationContext
     public Dictionary<int, QuestValue> Locals { get; } = new();
     public Dictionary<string, QuestValue> StaticFields { get; } = new(StringComparer.Ordinal);
     public Dictionary<string, string> StaticFieldDeclarations { get; } = new(StringComparer.Ordinal);
+    public Dictionary<string, string> StaticFieldInitializers { get; } = new(StringComparer.Ordinal);
     public Dictionary<string, QuestConfigField> ConfigFields { get; } = new(StringComparer.Ordinal);
     public IReadOnlyDictionary<Instruction, int> InstructionIndexes { get; }
     public Mono.Collections.Generic.Collection<Instruction> Instructions => Method.Body.Instructions;
+
+    internal static string StaticFieldName(FieldDefinition field) => "il_static_" + new string((field.DeclaringType.FullName + "_" + field.Name).Select(character => char.IsLetterOrDigit(character) ? character : '_').ToArray());
 
     public TypeReference ResolveType(TypeReference type)
     {
@@ -190,6 +195,26 @@ internal sealed class IlTranslationContext
                 return Convert.ToString(value.Operand, System.Globalization.CultureInfo.InvariantCulture) + "f";
             if (value.OpCode.Code == Code.Ldc_R8)
                 return Convert.ToString(value.Operand, System.Globalization.CultureInfo.InvariantCulture);
+        }
+        return null;
+    }
+
+    private static string? FindReferenceInitializer(ModuleDefinition module, FieldDefinition field)
+    {
+        var initializer = field.DeclaringType.Methods.FirstOrDefault(candidate => candidate.IsConstructor && candidate.IsStatic && candidate.HasBody);
+        if (initializer is null)
+            return null;
+
+        for (var i = 1; i < initializer.Body.Instructions.Count; i++)
+        {
+            var instruction = initializer.Body.Instructions[i];
+            if (instruction.OpCode.Code != Code.Stsfld || instruction.Operand is not FieldReference reference || reference.Resolve()?.FullName != field.FullName)
+                continue;
+            if (initializer.Body.Instructions[i - 1].OpCode.Code != Code.Newobj || initializer.Body.Instructions[i - 1].Operand is not MethodReference constructor || !constructor.Name.Equals(".ctor", StringComparison.Ordinal))
+                return null;
+
+            var nativeType = QuestApiTypeMapper.Map(field.FieldType);
+            return nativeType is not null && nativeType.EndsWith("*", StringComparison.Ordinal) ? nativeType[..^1] + "::New_ctor()" : null;
         }
         return null;
     }

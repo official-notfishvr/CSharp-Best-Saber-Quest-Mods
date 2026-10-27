@@ -79,7 +79,9 @@ internal static class GeneratedModTypeEmitter
                 foreach (var localType in LocalTypeReferences(field.FieldType, assembly))
                     includes.Add(TypeHeaderPath(localType));
             }
-            foreach (var method in type.Methods.Where(method => !method.IsStatic && method.HasBody && !method.IsConstructor && !method.IsGetter && !method.IsSetter))
+            foreach (var field in type.Fields.Where(field => field.IsStatic && !field.IsLiteral))
+                AddHeaders(QuestApiTypeMapper.Map(field.FieldType) ?? string.Empty, questIncludeRoot, includes);
+            foreach (var method in type.Methods.Where(method => method.HasBody && !method.IsConstructor))
             {
                 AddHeaders(QuestApiTypeMapper.Map(method.ReturnType) ?? string.Empty, questIncludeRoot, includes);
                 foreach (var parameter in method.Parameters)
@@ -117,13 +119,14 @@ internal static class GeneratedModTypeEmitter
                     macroTypeAliases[nativeType] = alias = cppName + "_GeneratedTypeAlias_" + macroTypeAliases.Count;
                 return alias;
             }
-            foreach (var method in type.Methods.Where(method => !method.IsStatic && method.HasBody && !method.IsConstructor && !method.IsGetter && !method.IsSetter))
+            foreach (var method in type.Methods.Where(method => method.HasBody && !method.IsConstructor))
             {
-                var returnType = QuestApiTypeMapper.Map(method.ReturnType) ?? throw new InvalidOperationException($"Generated mod method {method.FullName} has no Quest return type.");
+                var returnType = MethodCppType(method.ReturnType) ?? throw new InvalidOperationException($"Generated mod method {method.FullName} has no Quest return type.");
                 var parameters = method.Parameters.Select(
-                    (parameter, index) => $"{MacroType(QuestApiTypeMapper.Map(parameter.ParameterType) ?? throw new InvalidOperationException($"Generated mod parameter {parameter.Name} in {method.FullName} has no Quest type."))} {Identifier(parameter.Name, "arg" + index)}"
+                    (parameter, index) => $"{MacroType(MethodCppType(parameter.ParameterType) ?? throw new InvalidOperationException($"Generated mod parameter {parameter.Name} in {method.FullName} has no Quest type."))} {Identifier(parameter.Name, "arg" + index)}"
                 );
-                declarations.Add($"DECLARE_INSTANCE_METHOD({MacroType(returnType)}, {Identifier(method.Name, "method")}{(method.Parameters.Count == 0 ? "" : ", " + string.Join(", ", parameters))});");
+                var declarationMacro = method.IsStatic ? "DECLARE_STATIC_METHOD" : "DECLARE_INSTANCE_METHOD";
+                declarations.Add($"{declarationMacro}({MacroType(returnType)}, {Identifier(method.Name, "method")}{(method.Parameters.Count == 0 ? "" : ", " + string.Join(", ", parameters))});");
             }
             var mappedFields = type
                 .Fields.Where(field => !field.IsStatic && !field.IsLiteral && !field.Name.StartsWith("<", StringComparison.Ordinal))
@@ -163,21 +166,33 @@ internal static class GeneratedModTypeEmitter
 
             var sourceLines = new List<string> { $"#include \"{path}\"", $"DEFINE_TYPE({namespaceName}, {cppName});" };
             var staticDeclarations = new Dictionary<string, string>(StringComparer.Ordinal);
+            var staticConstructor = type.Methods.FirstOrDefault(method => method.IsConstructor && method.IsStatic && method.HasBody);
+            var staticInitializerName = "il_initialize_" + Identifier(namespaceName + "_" + cppName, "type") + "_static_fields";
+            if (staticConstructor is not null)
+            {
+                var initializerBody = IlMethodTranslator.TranslateModTypeMethod(staticConstructor, catalog);
+                foreach (var declaration in initializerBody.SelectMany(line => line.StaticFields ?? Array.Empty<QuestStaticField>()))
+                    staticDeclarations[declaration.Name] = declaration.Declaration;
+                var statements = string.Join("\n", initializerBody.Where(line => !string.IsNullOrWhiteSpace(line.RawCpp)).Select(line => "    " + line.RawCpp));
+                sourceLines.Add($"static void {staticInitializerName}() {{\n    static bool initialized = false;\n    if (initialized) return;\n    initialized = true;\n{statements}\n}}");
+            }
             foreach (var constructor in type.Methods.Where(method => method.IsConstructor && !method.IsStatic && method.HasBody && method.Parameters.Count == 0))
             {
                 var constructorBody = IlMethodTranslator.TranslateModTypeMethod(constructor, catalog);
                 foreach (var declaration in constructorBody.SelectMany(line => line.StaticFields ?? Array.Empty<QuestStaticField>()))
                     staticDeclarations[declaration.Name] = declaration.Declaration;
-                sourceLines.Add($"void {namespaceName}::{cppName}::__ctor() {{\n{string.Join("\n", constructorBody.Where(line => line.RawCpp is not null).Select(line => "    " + line.RawCpp))}\n}}");
+                var initializerCall = staticConstructor is null ? "" : $"    {staticInitializerName}();\n";
+                sourceLines.Add($"void {namespaceName}::{cppName}::__ctor() {{\n{initializerCall}{string.Join("\n", constructorBody.Where(line => !string.IsNullOrWhiteSpace(line.RawCpp)).Select(line => "    " + line.RawCpp))}\n}}");
             }
-            foreach (var method in type.Methods.Where(method => !method.IsStatic && method.HasBody && !method.IsConstructor && !method.IsGetter && !method.IsSetter))
+            foreach (var method in type.Methods.Where(method => method.HasBody && !method.IsConstructor))
             {
                 var methodBody = IlMethodTranslator.TranslateModTypeMethod(method, catalog);
                 foreach (var declaration in methodBody.SelectMany(line => line.StaticFields ?? Array.Empty<QuestStaticField>()))
                     staticDeclarations[declaration.Name] = declaration.Declaration;
-                var returnType = QuestApiTypeMapper.Map(method.ReturnType)!;
-                var parameters = method.Parameters.Select((parameter, index) => $"{QuestApiTypeMapper.Map(parameter.ParameterType)} {Identifier(parameter.Name, "arg" + index)}");
-                sourceLines.Add($"{returnType} {namespaceName}::{cppName}::{Identifier(method.Name, "method")}({string.Join(", ", parameters)}) {{\n{string.Join("\n", methodBody.Where(line => line.RawCpp is not null).Select(line => "    " + line.RawCpp))}\n}}");
+                var returnType = MethodCppType(method.ReturnType)!;
+                var parameters = method.Parameters.Select((parameter, index) => $"{MethodCppType(parameter.ParameterType)} {Identifier(parameter.Name, "arg" + index)}");
+                var initializerCall = staticConstructor is null ? "" : $"    {staticInitializerName}();\n";
+                sourceLines.Add($"{returnType} {namespaceName}::{cppName}::{Identifier(method.Name, "method")}({string.Join(", ", parameters)}) {{\n{initializerCall}{string.Join("\n", methodBody.Where(line => !string.IsNullOrWhiteSpace(line.RawCpp)).Select(line => "    " + line.RawCpp))}\n}}");
             }
             if (staticDeclarations.Count > 0)
                 sourceLines.Insert(1, string.Join("\n", staticDeclarations.Values));
@@ -213,6 +228,8 @@ internal static class GeneratedModTypeEmitter
                 includes.Add(relativeHeader);
         }
     }
+
+    private static string? MethodCppType(TypeReference type) => type.Resolve()?.IsEnum == true ? "int32_t" : QuestApiTypeMapper.Map(type);
 
     private static IEnumerable<TypeDefinition> LocalTypeReferences(TypeReference type, AssemblyDefinition assembly)
     {

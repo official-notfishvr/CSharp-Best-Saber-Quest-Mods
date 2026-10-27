@@ -95,7 +95,14 @@ internal static class IlInstructionLowerer
             }
             if (!context.StaticFields.TryGetValue(loadField.Resolve()?.FullName ?? loadField.FullName, out var staticValue))
                 throw Unsupported(context.Method, instruction);
-            stack.Push(staticValue);
+            var fieldName = loadField.Resolve()?.FullName ?? loadField.FullName;
+            if (context.StaticFieldInitializers.TryGetValue(fieldName, out var initializer))
+            {
+                var lazyValue = $"([&]() {{ if ({staticValue.Code} == nullptr) {staticValue.Code} = {initializer}; return {staticValue.Code}; }}())";
+                stack.Push(staticValue with { Code = lazyValue });
+            }
+            else
+                stack.Push(staticValue);
             return true;
         }
         if (code == Code.Ldsflda && instruction.Operand is FieldReference addressField)
@@ -600,9 +607,10 @@ internal static class IlInstructionLowerer
             return;
         }
         var boolFromInt32 = field.FieldType.MetadataType == MetadataType.Boolean && assigned?.PcType == "System.Int32";
-        if (assigned is null || assigned.PcType != field.FieldType.FullName && !boolFromInt32 || assigned.IsByRef)
+        var enumFromInt32 = enumField && assigned?.PcType == "System.Int32";
+        if (assigned is null || assigned.PcType != field.FieldType.FullName && !boolFromInt32 && !enumFromInt32 || assigned.IsByRef)
             throw Unsupported(context.Method, instruction);
-        var assignedCode = AsCppValue(assigned);
+        var assignedCode = enumField ? $"static_cast<int32_t>({AsCppValue(assigned)})" : AsCppValue(assigned);
         statement = Raw($"{access} = {assignedCode};", "IL instance field assignment", assigned.ApiMapping);
     }
 

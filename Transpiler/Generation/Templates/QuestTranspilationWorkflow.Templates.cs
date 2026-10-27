@@ -100,6 +100,75 @@ internal static partial class QuestTranspilationWorkflow
         Directory.CreateDirectory(Path.Combine(destination, "src"));
     }
 
+    static void WriteEmbeddedAssetBundles(string output, EmbeddedAssetBundleOutput assets)
+    {
+        var groups = assets.Bundles.GroupBy(bundle => bundle.PackagePath, StringComparer.Ordinal).ToArray();
+        var collision = groups.FirstOrDefault(group => group.Select(bundle => bundle.ResourceName).Distinct(StringComparer.Ordinal).Count() > 1);
+        if (collision is not null)
+            throw new InvalidOperationException($"Embedded asset bundles collide at package path '{collision.Key}'. Rename the resource or adjust the transpiler's asset path mapping.");
+
+        foreach (var bundle in groups.Select(group => group.First()))
+        {
+            var path = Path.Combine(output, bundle.PackagePath.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllBytes(path, bundle.Data);
+        }
+    }
+
+    static void AddEmbeddedAssetFileCopies(string manifestPath, EmbeddedAssetBundleOutput assets)
+    {
+        if (assets.Bundles.Count == 0 || !File.Exists(manifestPath))
+            return;
+        var root = JsonNode.Parse(File.ReadAllText(manifestPath))!.AsObject();
+        var copies = root["fileCopies"] as JsonArray ?? new JsonArray();
+        foreach (var bundle in assets.Bundles.GroupBy(bundle => bundle.PackagePath, StringComparer.Ordinal).Select(group => group.First()))
+        {
+            if (copies.OfType<JsonObject>().Any(copy => copy["name"]?.GetValue<string>() == bundle.PackagePath))
+                continue;
+            copies.Add(new JsonObject { ["name"] = bundle.PackagePath, ["destination"] = bundle.DevicePath });
+        }
+        root["fileCopies"] = copies;
+        File.WriteAllText(manifestPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    static void AddFileCopyPackaging(string output)
+    {
+        var qmodScript = Path.Combine(output, "scripts", "createqmod.ps1");
+        if (!File.Exists(qmodScript))
+            throw new InvalidOperationException($"Quest template is missing scripts/createqmod.ps1, required to package embedded asset bundles: {qmodScript}");
+        var qmodSource = File.ReadAllText(qmodScript);
+        const string marker = "# Transpiler embedded file copies";
+        if (!qmodSource.Contains(marker, StringComparison.Ordinal))
+        {
+            const string insertionPoint = "$zip = $qmodName + \".zip\"";
+            if (!qmodSource.Contains(insertionPoint, StringComparison.Ordinal))
+                throw new InvalidOperationException("Quest template scripts/createqmod.ps1 has no supported QMOD file-list insertion point.");
+            var addition =
+                marker
+                + "\n$packagedFileCopyRoots = @{}\nforeach ($fileCopy in $modJson.fileCopies) {\n    $relativePath = $fileCopy.name.Replace('\\', '/')\n    $path = \"./\" + $relativePath\n    if (-not (Test-Path $path)) {\n        Write-Output \"Error: could not find file copy source: $path\"\n        exit 1\n    }\n    $root = $relativePath.Split('/')[0]\n    $archiveSource = if ($relativePath.Contains('/')) { \"./\" + $root } else { $path }\n    if (-not $packagedFileCopyRoots.ContainsKey($archiveSource)) {\n        $packagedFileCopyRoots[$archiveSource] = $true\n        $filelist += ,$archiveSource\n    }\n}\n\n";
+            qmodSource = qmodSource.Replace(insertionPoint, addition + insertionPoint, StringComparison.Ordinal);
+            File.WriteAllText(qmodScript, qmodSource);
+        }
+
+        var copyScript = Path.Combine(output, "scripts", "copy.ps1");
+        if (File.Exists(copyScript))
+        {
+            var source = File.ReadAllText(copyScript);
+            const string copyMarker = "# Transpiler embedded file copies";
+            if (!source.Contains(copyMarker, StringComparison.Ordinal))
+            {
+                const string insertionPoint = "& $PSScriptRoot/restart-game.ps1";
+                if (!source.Contains(insertionPoint, StringComparison.Ordinal))
+                    throw new InvalidOperationException("Quest template scripts/copy.ps1 has no supported asset-copy insertion point.");
+                var addition =
+                    copyMarker
+                    + "\nforeach ($fileCopy in $modJson.fileCopies) {\n    $path = \"./\" + $fileCopy.name\n    if (Test-Path $path) {\n        $destinationDirectory = Split-Path -Parent $fileCopy.destination\n        & adb shell mkdir -p $destinationDirectory\n        & adb push $path $fileCopy.destination\n    }\n}\n\n";
+                source = source.Replace(insertionPoint, addition + insertionPoint, StringComparison.Ordinal);
+                File.WriteAllText(copyScript, source);
+            }
+        }
+    }
+
     static void SelectQuestDependencies(string qpmPath, string sharedPath, bool usesConfig, IReadOnlyDictionary<string, string> requiredQuestPackages)
     {
         var required = new HashSet<string>(StringComparer.Ordinal) { "beatsaber-hook", "scotland2", "bs-cordl", "paper2_scotland2", "bsml", "custom-types" };

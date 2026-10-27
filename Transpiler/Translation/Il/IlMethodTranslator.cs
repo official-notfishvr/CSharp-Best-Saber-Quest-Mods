@@ -7,12 +7,15 @@ internal static class IlMethodTranslator
 {
     public static IReadOnlyList<QuestLogStatement> TranslateModTypeMethod(MethodDefinition method, MappingCatalog catalog)
     {
-        if (method.IsStatic || !method.HasBody || method.IsGetter || method.IsSetter)
+        if (!method.HasBody)
             throw new InvalidOperationException($"Unsupported generated type method shape: {method.FullName}.");
-        var arguments = new Dictionary<int, QuestValue> { [0] = new QuestValue("this", method.DeclaringType.FullName, false) };
+        var argumentOffset = method.IsStatic ? 0 : 1;
+        var arguments = new Dictionary<int, QuestValue>();
+        if (!method.IsStatic)
+            arguments[0] = new QuestValue("this", method.DeclaringType.FullName, false);
         for (var i = 0; i < method.Parameters.Count; i++)
-            arguments[i + 1] = new QuestValue(CppIdentifierForArgument(method.Parameters[i], i), method.Parameters[i].ParameterType.FullName, false);
-        var nativeReturn = QuestApiTypeMapper.Map(method.ReturnType) ?? throw new InvalidOperationException($"No Quest representation for return type {method.ReturnType.FullName} in {method.FullName}.");
+            arguments[i + argumentOffset] = new QuestValue(CppIdentifierForArgument(method.Parameters[i], i), method.Parameters[i].ParameterType.FullName, false);
+        var nativeReturn = method.ReturnType.Resolve()?.IsEnum == true ? "int32_t" : QuestApiTypeMapper.Map(method.ReturnType) ?? throw new InvalidOperationException($"No Quest representation for return type {method.ReturnType.FullName} in {method.FullName}.");
         var context = new IlTranslationContext(method, catalog, arguments, nativeReturn);
         return IlControlFlowLowerer.LowerRange(context, 0, method.Body.Instructions.Count, includeLocalDeclarations: true);
     }
