@@ -49,7 +49,7 @@ internal static partial class QuestTranspilationWorkflow
             File.WriteAllText(cmake, Regex.Replace(File.ReadAllText(cmake), @"project\(\s*test\b", "project(" + SanitizeCppIdentifier(metadata.Id), RegexOptions.IgnoreCase));
     }
 
-    static void UpdateQmodManifest(string path, ModMetadata metadata)
+    static void UpdateQmodManifest(string path, ModMetadata metadata, EmbeddedAssetBundleOutput assets)
     {
         if (!File.Exists(path))
             throw new InvalidOperationException($"Quest template is missing mod.json: {path}");
@@ -60,6 +60,15 @@ internal static partial class QuestTranspilationWorkflow
         root["version"] = metadata.Version;
         root["description"] = metadata.Description;
         root["modFiles"] = new JsonArray(JsonValue.Create(BinaryName(metadata)));
+        if (root["fileCopies"] is JsonArray fileCopies && assets.Bundles.Count > 0)
+        {
+            var embeddedPaths = assets.Bundles.Select(bundle => bundle.PackagePath).ToHashSet(StringComparer.Ordinal);
+            for (var index = fileCopies.Count - 1; index >= 0; index--)
+            {
+                if (fileCopies[index] is JsonObject fileCopy && embeddedPaths.Contains(fileCopy["name"]?.GetValue<string>() ?? ""))
+                    fileCopies.RemoveAt(index);
+            }
+        }
         File.WriteAllText(path, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
     }
 
@@ -115,92 +124,44 @@ internal static partial class QuestTranspilationWorkflow
         }
     }
 
-    static void AddEmbeddedAssetFileCopies(string manifestPath, EmbeddedAssetBundleOutput assets)
+    static void AddEmbeddedAssetBundleEmbedding(string cmakePath, EmbeddedAssetBundleOutput assets)
     {
-        if (assets.Bundles.Count == 0 || !File.Exists(manifestPath))
+        if (assets.Bundles.Count == 0)
             return;
-        var root = JsonNode.Parse(File.ReadAllText(manifestPath))!.AsObject();
-        var copies = root["fileCopies"] as JsonArray ?? new JsonArray();
-        foreach (var bundle in assets.Bundles.GroupBy(bundle => bundle.PackagePath, StringComparer.Ordinal).Select(group => group.First()))
-        {
-            if (copies.OfType<JsonObject>().Any(copy => copy["name"]?.GetValue<string>() == bundle.PackagePath))
-                continue;
-            copies.Add(new JsonObject { ["name"] = bundle.PackagePath, ["destination"] = bundle.DevicePath });
-        }
-        root["fileCopies"] = copies;
-        File.WriteAllText(manifestPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-    }
+        if (!File.Exists(cmakePath))
+            throw new InvalidOperationException($"Quest template is missing CMakeLists.txt: {cmakePath}");
 
-    static void AddFileCopyPackaging(string output)
-    {
-        var qmodScript = Path.Combine(output, "scripts", "createqmod.ps1");
-        if (!File.Exists(qmodScript))
-            throw new InvalidOperationException($"Quest template is missing scripts/createqmod.ps1, required to package embedded asset bundles: {qmodScript}");
-        var qmodSource = File.ReadAllText(qmodScript);
-        const string marker = "# Transpiler embedded file copies";
-        if (!qmodSource.Contains(marker, StringComparison.Ordinal))
-        {
-            const string insertionPoint = "$zip = $qmodName + \".zip\"";
-            if (!qmodSource.Contains(insertionPoint, StringComparison.Ordinal))
-                throw new InvalidOperationException("Quest template scripts/createqmod.ps1 has no supported QMOD file-list insertion point.");
-            var addition =
-                marker
-                + "\n$packagedFileCopyRoots = @{}\nforeach ($fileCopy in $modJson.fileCopies) {\n    $relativePath = $fileCopy.name.Replace('\\', '/')\n    $path = \"./\" + $relativePath\n    if (-not (Test-Path $path)) {\n        Write-Output \"Error: could not find file copy source: $path\"\n        exit 1\n    }\n    $root = $relativePath.Split('/')[0]\n    $archiveSource = if ($relativePath.Contains('/')) { \"./\" + $root } else { $path }\n    if (-not $packagedFileCopyRoots.ContainsKey($archiveSource)) {\n        $packagedFileCopyRoots[$archiveSource] = $true\n        $filelist += ,$archiveSource\n    }\n}\n\n";
-            qmodSource = qmodSource.Replace(insertionPoint, addition + insertionPoint, StringComparison.Ordinal);
-            File.WriteAllText(qmodScript, qmodSource);
-        }
+        var cmake = File.ReadAllText(cmakePath);
+        const string marker = "# Transpiler embedded bundle objects";
+        if (cmake.Contains(marker, StringComparison.Ordinal))
+            return;
 
-        var copyScript = Path.Combine(output, "scripts", "copy.ps1");
-        if (File.Exists(copyScript))
-        {
-            var source = File.ReadAllText(copyScript);
-            const string copyMarker = "# Transpiler embedded file copies";
-            if (!source.Contains(copyMarker, StringComparison.Ordinal))
-            {
-                const string insertionPoint = "& $PSScriptRoot/restart-game.ps1";
-                if (!source.Contains(insertionPoint, StringComparison.Ordinal))
-                    throw new InvalidOperationException("Quest template scripts/copy.ps1 has no supported asset-copy insertion point.");
-                var addition =
-                    copyMarker
-                    + "\nforeach ($fileCopy in $modJson.fileCopies) {\n    $path = \"./\" + $fileCopy.name\n    if (Test-Path $path) {\n        $destinationDirectory = Split-Path -Parent $fileCopy.destination\n        & adb shell mkdir -p $destinationDirectory\n        & adb push $path $fileCopy.destination\n    }\n}\n\n";
-                source = source.Replace(insertionPoint, addition + insertionPoint, StringComparison.Ordinal);
-                File.WriteAllText(copyScript, source);
-            }
-        }
-    }
+        File.AppendAllText(cmakePath, $$"""
 
-    static void SelectQuestDependencies(string qpmPath, string sharedPath, bool usesConfig, IReadOnlyDictionary<string, string> requiredQuestPackages)
-    {
-        var required = new HashSet<string>(StringComparer.Ordinal) { "beatsaber-hook", "scotland2", "bs-cordl", "paper2_scotland2", "bsml", "custom-types" };
-        if (usesConfig)
-            required.Add("config-utils");
-
-        foreach (var path in new[] { qpmPath, sharedPath })
-        {
-            if (!File.Exists(path))
-                continue;
-            var root = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
-            var dependencies = path == sharedPath ? (root["config"] as JsonObject)?["dependencies"] as JsonArray : root["dependencies"] as JsonArray;
-            if (dependencies is null)
-                continue;
-            for (var index = dependencies.Count - 1; index >= 0; index--)
-                if (dependencies[index]?["id"]?.GetValue<string>() is string id && !required.Contains(id))
-                    dependencies.RemoveAt(index);
-            foreach (var (id, versionRange) in requiredQuestPackages)
-            {
-                if (dependencies.Any(dependency => dependency?["id"]?.GetValue<string>() == id))
-                    continue;
-                dependencies.Add(
-                    new JsonObject
-                    {
-                        ["id"] = id,
-                        ["versionRange"] = versionRange,
-                        ["additionalData"] = new JsonObject(),
-                    }
-                );
-            }
-            File.WriteAllText(path, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-        }
+        {{marker}}
+        set(TRANSPILED_ASSET_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/assets")
+        set(TRANSPILED_ASSET_OBJECT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/embeddedAssets")
+        file(MAKE_DIRECTORY "${TRANSPILED_ASSET_OBJECT_DIRECTORY}")
+        file(GLOB TRANSPILED_ASSET_FILES "${TRANSPILED_ASSET_DIRECTORY}/*")
+        set(TRANSPILED_ASSET_OBJECTS)
+        foreach(TRANSPILED_ASSET_FILE IN LISTS TRANSPILED_ASSET_FILES)
+            get_filename_component(TRANSPILED_ASSET_NAME "${TRANSPILED_ASSET_FILE}" NAME)
+            set(TRANSPILED_ASSET_OBJECT "${TRANSPILED_ASSET_OBJECT_DIRECTORY}/${TRANSPILED_ASSET_NAME}.o")
+            add_custom_command(
+                OUTPUT "${TRANSPILED_ASSET_OBJECT}"
+                COMMAND ${CMAKE_OBJCOPY} "${TRANSPILED_ASSET_NAME}" "${TRANSPILED_ASSET_OBJECT}" --input-target binary --output-target elf64-aarch64
+                DEPENDS "${TRANSPILED_ASSET_FILE}"
+                WORKING_DIRECTORY "${TRANSPILED_ASSET_DIRECTORY}"
+                VERBATIM
+            )
+            list(APPEND TRANSPILED_ASSET_OBJECTS "${TRANSPILED_ASSET_OBJECT}")
+        endforeach()
+        if(TRANSPILED_ASSET_OBJECTS)
+            add_library(transpiled_embedded_assets OBJECT ${TRANSPILED_ASSET_OBJECTS})
+            set_target_properties(transpiled_embedded_assets PROPERTIES LINKER_LANGUAGE CXX)
+            target_link_libraries(${COMPILE_ID} PRIVATE transpiled_embedded_assets ${TRANSPILED_ASSET_OBJECTS})
+        endif()
+        """ + "\n");
     }
 
     static void AddBsmlIncludeDirectory(string cmakePath)

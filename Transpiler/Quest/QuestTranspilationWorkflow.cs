@@ -121,7 +121,6 @@ internal static partial class QuestTranspilationWorkflow
             var mappingReport = new List<object>();
             var resolvedMappings = new List<TargetMapping>();
             var requiredApiHeaders = new HashSet<string>(StringComparer.Ordinal);
-            var requiredQuestPackages = new Dictionary<string, string>(StringComparer.Ordinal);
             var questConfigFields = new Dictionary<string, QuestConfigField>(StringComparer.Ordinal);
             var questStaticFields = new Dictionary<string, QuestStaticField>(StringComparer.Ordinal);
             foreach (var patch in patches)
@@ -173,7 +172,6 @@ internal static partial class QuestTranspilationWorkflow
                             var packageHeader = callMapping.PublicHeader.StartsWith(packageIncludePrefix, StringComparison.Ordinal) ? callMapping.PublicHeader[packageIncludePrefix.Length..] : callMapping.PublicHeader;
                             if (!File.Exists(Path.Combine(QpmCache.Root, callMapping.QuestPackageId!, callMapping.QuestPackageVersionRange!.TrimStart('=', '^'), "src", packageHeader.Replace('/', Path.DirectorySeparatorChar))))
                                 throw new InvalidOperationException($"Quest package '{callMapping.QuestPackageId}' {callMapping.QuestPackageVersionRange} is not present in the local QPM cache with header '{callMapping.PublicHeader}'.");
-                            requiredQuestPackages[callMapping.QuestPackageId!] = callMapping.QuestPackageVersionRange!;
                         }
                         else
                         {
@@ -216,7 +214,8 @@ internal static partial class QuestTranspilationWorkflow
 
             var groupedHooks = translatedPatches.GroupBy(item => HookTargetKey(item.Mapping), StringComparer.Ordinal).Select(group => group.ToArray()).ToArray();
             var generatedHooks = groupedHooks.Select(group => GenerateGroupedHook(group[0].Mapping, group)).ToList();
-            var hookNames = groupedHooks.Select(group => group[0].Mapping.HookName).ToArray();
+            generatedHooks.AddRange(embeddedAssetBundles.HookCode);
+            var hookNames = groupedHooks.Select(group => group[0].Mapping.HookName).Concat(embeddedAssetBundles.HookNames).ToArray();
 
             var bsmlOutput = BsmlQuestEmitter.Emit(bsmlMenus, assembly.Name.Name);
             foreach (var callMapping in bsmlOutput.ApiMappings)
@@ -269,8 +268,7 @@ internal static partial class QuestTranspilationWorkflow
 
             CopyTemplate(template, output);
             WriteEmbeddedAssetBundles(output, embeddedAssetBundles);
-            if (embeddedAssetBundles.Bundles.Count > 0)
-                AddFileCopyPackaging(output);
+            AddEmbeddedAssetBundleEmbedding(Path.Combine(output, "CMakeLists.txt"), embeddedAssetBundles);
             foreach (var generatedType in generatedTypes)
             {
                 var headerPath = Path.Combine(output, "include", generatedType.HeaderPath.Replace('/', Path.DirectorySeparatorChar));
@@ -280,7 +278,6 @@ internal static partial class QuestTranspilationWorkflow
                 File.WriteAllText(headerPath, generatedType.Header);
                 File.WriteAllText(sourcePath, generatedType.Source);
             }
-            SelectQuestDependencies(Path.Combine(output, "qpm.json"), Path.Combine(output, "qpm.shared.json"), questConfigFields.Count > 0, requiredQuestPackages);
             if (bsmlMenus.Count > 0)
                 AddBsmlIncludeDirectory(Path.Combine(output, "CMakeLists.txt"));
             if (questConfigFields.Count > 0)
@@ -292,22 +289,22 @@ internal static partial class QuestTranspilationWorkflow
                 GenerateSource(
                     string.Join("\n\n", generatedHooks),
                     hookNames,
-                    requiredHeaders.Concat(bsmlOutput.Includes).Concat(embeddedAssetBundles.Includes),
+                    requiredHeaders.Concat(bsmlOutput.Includes).Concat(embeddedAssetBundles.Includes).Concat(zenjectBootstrap.Includes),
                     metadata,
                     questConfigFields.Count > 0,
                     questStaticFields.Values,
                     string.Join("\n", embeddedAssetBundles.SupportCode.Concat(new[] { bsmlOutput.SupportCode }.Where(value => !string.IsNullOrWhiteSpace(value)))),
-                    zenjectBootstrap.StartupComments.Concat(embeddedAssetBundles.StartupLines).Concat(bsmlOutput.StartupLines),
+                    zenjectBootstrap.StartupComments
+                        .Concat(embeddedAssetBundles.StartupLines)
+                        .Concat(bsmlOutput.StartupLines),
                     bsmlMenus.Count,
                     lifecycle.NeedsUnload
                 )
             );
             UpdateProjectMetadata(Path.Combine(output, "qpm.json"), metadata);
             UpdateProjectMetadata(Path.Combine(output, "mod.template.json"), metadata);
-            UpdateQmodManifest(Path.Combine(output, "mod.json"), metadata);
-            UpdateQmodManifest(Path.Combine(output, "mod.template.json"), metadata);
-            AddEmbeddedAssetFileCopies(Path.Combine(output, "mod.json"), embeddedAssetBundles);
-            AddEmbeddedAssetFileCopies(Path.Combine(output, "mod.template.json"), embeddedAssetBundles);
+            UpdateQmodManifest(Path.Combine(output, "mod.json"), metadata, embeddedAssetBundles);
+            UpdateQmodManifest(Path.Combine(output, "mod.template.json"), metadata, embeddedAssetBundles);
             var report = new
             {
                 schemaVersion = 2,
